@@ -1,0 +1,7 @@
+opencv-python>=4.8.0
+numpy>=1.24.0
+pyautogui>=0.9.54
+Pillow>=10.0.0
+PyObjC-core>=10.0; sys_platform == "darwin"
+PyObjC-framework-Quartz>=10.0; sys_platform == "darwin"
+PyObjC-framework-Cocoa>=10.0; sys_platform == "darwin"
