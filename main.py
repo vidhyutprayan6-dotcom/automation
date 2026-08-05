@@ -21,9 +21,18 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-import cv2  # noqa: F401 — required by pyautogui confidence matching
 import numpy as np
 import pyautogui
+
+# OpenCV is pulled in by opencv-python; confidence= matching needs it installed.
+try:
+    import cv2  # noqa: F401
+except ImportError as exc:
+    raise SystemExit(
+        "opencv-python is not installed. Activate the venv and run:\n"
+        "  pip install -r requirements.txt\n"
+        f"Original error: {exc}"
+    ) from exc
 
 # ---------------------------------------------------------------------------
 # Config
