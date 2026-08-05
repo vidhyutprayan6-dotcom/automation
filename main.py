@@ -84,9 +84,84 @@ def human_pause(lo: float = 0.8, hi: float = 1.8) -> None:
     time.sleep(random.uniform(lo, hi))
 
 
+def _release_modifier_keys() -> None:
+    """Ensure Shift/Cmd/Option/Ctrl are up (pyautogui.write can leave Shift stuck)."""
+    try:
+        from Quartz import CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
+    except ImportError:
+        for key in ("shift", "command", "option", "control"):
+            pyautogui.keyUp(key)
+        return
+
+    # macOS keycodes: Shift 56/60, Control 59/62, Option 58/61, Command 55/54
+    for keycode in (56, 60, 59, 62, 58, 61, 55, 54):
+        ev = CGEventCreateKeyboardEvent(None, keycode, False)
+        CGEventPost(kCGHIDEventTap, ev)
+
+
+def _type_char_quartz(ch: str) -> None:
+    """
+    Inject one Unicode character via Quartz CGEvent.
+
+    WHY NOT pyautogui.write():
+    pyautogui simulates physical US keycodes + Shift. After uppercase letters,
+    Shift often stays "stuck", so '4' becomes '$' and '@' becomes '2'.
+    Unicode events send the exact character (upper/lower/digit/symbol) with no
+    Shift key dependency — required for proxy strings like user:pass@host:port.
+    """
+    from Quartz import (
+        CGEventCreateKeyboardEvent,
+        CGEventKeyboardSetUnicodeString,
+        CGEventPost,
+        kCGHIDEventTap,
+    )
+
+    # Key-down with Unicode payload
+    down = CGEventCreateKeyboardEvent(None, 0, True)
+    CGEventKeyboardSetUnicodeString(down, len(ch), ch)
+    CGEventPost(kCGHIDEventTap, down)
+
+    # Key-up
+    up = CGEventCreateKeyboardEvent(None, 0, False)
+    CGEventKeyboardSetUnicodeString(up, len(ch), ch)
+    CGEventPost(kCGHIDEventTap, up)
+
+
 def human_type(text: str) -> None:
-    interval = random.uniform(0.05, 0.15)
-    pyautogui.write(text, interval=interval)
+    """
+    Type `text` exactly as read from data.txt — preserves case and symbols.
+    Uses Quartz Unicode injection (not pyautogui.write).
+    """
+    print(f"[INFO] Exact text to type ({len(text)} chars): {text!r}")
+    _release_modifier_keys()
+    time.sleep(0.05)
+
+    try:
+        for ch in text:
+            if ch == "\n":
+                pyautogui.press("enter")
+            elif ch == "\t":
+                pyautogui.press("tab")
+            else:
+                _type_char_quartz(ch)
+            time.sleep(random.uniform(0.05, 0.14))
+    except Exception as exc:  # noqa: BLE001
+        # Last-resort accurate fallback: clipboard paste (exact Unicode)
+        print(f"[WARN] Quartz typing failed ({exc}); falling back to clipboard paste")
+        try:
+            import pyperclip
+        except ImportError:
+            raise SystemExit(
+                "Accurate typing failed. Install pyperclip: pip install pyperclip"
+            ) from exc
+        _release_modifier_keys()
+        pyperclip.copy(text)
+        time.sleep(0.1)
+        pyautogui.hotkey("command", "v")
+        time.sleep(0.15)
+
+    _release_modifier_keys()
+    print(f"[INFO] Finished typing {len(text)} characters")
 
 
 # ---------------------------------------------------------------------------

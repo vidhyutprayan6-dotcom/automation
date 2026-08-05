@@ -2,6 +2,7 @@ opencv-python>=4.8.0
 numpy>=1.24.0,<2.1
 pyautogui>=0.9.54
 Pillow>=10.0.0
+pyperclip>=1.8.0
 # PyObjC 12.x is yanked / broken on Python 3.9 — pin to 11.x wheels
 pyobjc-core>=10.0,<12; sys_platform == "darwin"
 pyobjc-framework-Cocoa>=10.0,<12; sys_platform == "darwin"
