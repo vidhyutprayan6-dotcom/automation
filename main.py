@@ -44,16 +44,18 @@ APP_PATH = "/Applications/BlackBird.app"
 BASE_SCREEN = (1920, 1080)
 
 # Absolute click targets on BASE_SCREEN (1920x1080), from your marked screenshots.
-# Measured as the center of each red outline (same method as New profile).
 COORDS: Dict[str, Optional[Tuple[int, int]]] = {
-    "new_profile": (1455, 104),    # + New profile (top-right toolbar)
-    "new_proxy": (1409, 287),      # Connection → New Proxy
-    "proxy_input": (1274, 381),    # user:pass@host:port field
-    "create_profile": (1451, 738), # Create profile (bottom-right)
+    "new_profile": (1455, 104),      # + New profile (top-right toolbar)
+    "new_proxy": (1409, 287),        # Connection → New Proxy
+    "proxy_input": (1274, 381),      # user:pass@host:port field
+    "create_profile": (1451, 738),   # Create profile (bottom-right)
+    "open_profile": (906, 201),      # top-row proxy refresh/open icon
 }
 
+DATA_FILE = SCRIPT_DIR / "data.txt"
+
 IMG_NEW_PROFILE = SCRIPT_DIR / "new_profile.png"
-IMG_NEW_PROXY = SCRIPT_DIR / "http_tab.png"  # optional legacy template name
+IMG_NEW_PROXY = SCRIPT_DIR / "http_tab.png"
 IMG_PROXY_INPUT = SCRIPT_DIR / "proxy_input.png"
 IMG_CREATE_PROFILE = SCRIPT_DIR / "create_profile.png"
 
@@ -62,6 +64,7 @@ TEMPLATES = {
     "new_proxy": IMG_NEW_PROXY,
     "proxy_input": IMG_PROXY_INPUT,
     "create_profile": IMG_CREATE_PROFILE,
+    "open_profile": None,
 }
 
 DEFAULT_CONFIDENCE = 0.9
@@ -324,58 +327,102 @@ def clear_field_macos() -> None:
     time.sleep(random.uniform(0.1, 0.25))
 
 
-def create_profile(
+def load_proxies(path: Path) -> list[str]:
+    """
+    Read proxy lines from data.txt (one proxy per line).
+    Accepts: user:pass@host:port
+    Skips blank lines and lines that do not look like proxies.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"data file not found: {path}")
+
+    proxies: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Proxy shape: user:pass@host:port
+        if "@" in line and line.count(":") >= 2:
+            proxies.append(line)
+        else:
+            print(f"[WARN] Skipping non-proxy line in {path.name}: {line[:48]}...")
+    return proxies
+
+
+def run_one_profile(
     proxy: str,
+    index: int,
+    total: int,
     confidence: float = DEFAULT_CONFIDENCE,
     coords_only: bool = True,
-) -> int:
+    launch: bool = False,
+) -> bool:
     """
-    Full flow (all coordinate clicks + Bezier moves):
-      1) New profile
-      2) New Proxy
-      3) Proxy input → clear → type proxy string
-      4) Create profile
+    One complete workflow:
+      New profile → New Proxy → type proxy from data.txt → Create profile
+      → click top-row open/refresh icon (verify browser opens)
     """
-    launch_blackbird()
+    print(f"[INFO] === Workflow {index}/{total} ===")
+    print(f"[INFO] Proxy: {proxy}")
+
+    if launch:
+        launch_blackbird()
+    else:
+        activate_blackbird()
     human_pause()
 
-    # 1) Open New profile slide-out
+    # 1) New profile
     if not click_target("new_profile", "New profile", confidence, coords_only):
-        return 1
+        return False
     human_pause()
-    time.sleep(random.uniform(0.9, 1.5))  # wait for slide-out to finish
+    time.sleep(random.uniform(0.9, 1.5))
 
-    # 2) Connection → New Proxy
+    # 2) New Proxy
     if not click_target("new_proxy", "New Proxy", confidence, coords_only):
-        return 1
+        return False
     human_pause()
-    time.sleep(random.uniform(0.5, 1.0))  # proxy fields appear
+    time.sleep(random.uniform(0.5, 1.0))
 
-    # 3) Click proxy field, clear, type
+    # 3) Proxy input from data.txt
     if not click_target("proxy_input", "Proxy input field", confidence, coords_only):
-        return 1
+        return False
     human_pause(0.4, 0.9)
     clear_field_macos()
-    print(f"[INFO] Typing proxy ({len(proxy)} chars) with human intervals")
+    print(f"[INFO] Typing proxy from data.txt ({len(proxy)} chars)")
     human_type(proxy)
     human_pause()
 
-    # 4) Create profile
+    # 4) Create profile (coordinates unchanged — already working)
     if not click_target("create_profile", "Create profile", confidence, coords_only):
-        return 1
+        return False
+    human_pause()
+    time.sleep(random.uniform(1.2, 2.0))  # list refresh; new row at top
 
-    print("[INFO] Profile creation flow completed successfully.")
-    return 0
+    # 5) Open/activate the new top-row profile (browser launch check)
+    if not click_target("open_profile", "Open profile (proxy icon)", confidence, coords_only):
+        return False
+
+    print(
+        "[INFO] Open-profile clicked. Waiting to observe whether the browser opens..."
+    )
+    time.sleep(random.uniform(4.0, 6.0))
+    print(f"[INFO] Workflow {index}/{total} finished.")
+    return True
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="BlackBird human-like profile creation (coords + Bezier)."
+        description="BlackBird profile workflow (data.txt + coordinate Bezier clicks)."
+    )
+    p.add_argument(
+        "--data",
+        default=str(DATA_FILE),
+        help="Path to data.txt (one proxy per line). Default: ./data.txt",
     )
     p.add_argument(
         "--proxy",
-        default=os.environ.get("BLACKBIRD_PROXY", "user:pass@host:port"),
-        help="Proxy string user:pass@host:port",
+        default=None,
+        help="Optional single proxy override (skips data.txt)",
     )
     p.add_argument(
         "--confidence",
@@ -394,6 +441,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fall back to PNG template matching if a coord is missing",
     )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Process only the first N proxies (0 = all)",
+    )
     return p.parse_args()
 
 
@@ -409,16 +462,49 @@ def main() -> None:
     w, h = pyautogui.size()
     print(f"[INFO] Screen size: {w}x{h} (coords calibrated for {BASE_SCREEN[0]}x{BASE_SCREEN[1]})")
     print(f"[INFO] Script dir: {SCRIPT_DIR}")
-    print(f"[INFO] Proxy: {args.proxy}")
     for key, pt in COORDS.items():
         print(f"[INFO] Coord {key}: {pt}")
 
-    code = create_profile(
-        args.proxy,
-        confidence=args.confidence,
-        coords_only=coords_only,
-    )
-    sys.exit(code)
+    if args.proxy:
+        proxies = [args.proxy.strip()]
+        print("[INFO] Using --proxy override (1 entry)")
+    else:
+        data_path = Path(args.data)
+        try:
+            proxies = load_proxies(data_path)
+        except FileNotFoundError as exc:
+            print(f"[ERROR] {exc}")
+            sys.exit(1)
+        print(f"[INFO] Loaded {len(proxies)} proxy line(s) from {data_path}")
+
+    if not proxies:
+        print("[ERROR] No proxy lines found. Put user:pass@host:port lines in data.txt")
+        sys.exit(1)
+
+    if args.limit and args.limit > 0:
+        proxies = proxies[: args.limit]
+
+    total = len(proxies)
+    ok = 0
+    for i, proxy in enumerate(proxies, start=1):
+        success = run_one_profile(
+            proxy,
+            index=i,
+            total=total,
+            confidence=args.confidence,
+            coords_only=coords_only,
+            launch=(i == 1),
+        )
+        if success:
+            ok += 1
+        else:
+            print(f"[ERROR] Workflow {i}/{total} failed; stopping.")
+            break
+        if i < total:
+            human_pause(1.0, 2.0)
+
+    print(f"[INFO] Done. Successful workflows: {ok}/{total}")
+    sys.exit(0 if ok == total else 1)
 
 
 if __name__ == "__main__":
