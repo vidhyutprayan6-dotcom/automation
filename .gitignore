@@ -1,0 +1,39 @@
+# Ignore macOS automation folder
+macOS_automation_proxy_blackbird/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary files
+*.tmp
+*.log
+*.temp
+
+# Video files
+*.MOV
+*.mov
+*.mp4
+
+# Installers
+*.dmg
+*.pkg
+
+# Python cache (if using Python)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env
+
+# IDE files
+.vscode/
+.idea/
+
+# Node.js files (if using Node)
+node_modules/
+npm-debug.log
