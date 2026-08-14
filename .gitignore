@@ -1,0 +1,32 @@
+# macOS BlackBird automation
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# PyInstaller
+build/
+*.spec
+app_icon.iconset/
+app_icon.icns
+
+# OS / editor
+.DS_Store
+.AppleDouble
+.LSOverride
+.vscode/
+.idea/
+
+# Logs / runtime state
+logs/
+*.log
+*.MOV
+*.mov
+*.mp4
+*.dmg
+*.pkg

@@ -1,0 +1,5 @@
+# One checkout email per line (top → bottom).
+# Emails cycle across workflows the same way as cards:
+#   workflow 1 → line 1, workflow 2 → line 2, ... then wrap to line 1.
+# Length may differ from data.txt / card.txt — that is OK.
+trioleo2947@outlook.com

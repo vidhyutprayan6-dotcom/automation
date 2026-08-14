@@ -1,0 +1,4 @@
+# One card per line: number|MM|YY|CVC|Cardholder Name
+# Cards cycle across workflows (wrap when fewer cards than proxies).
+# Length may differ from data.txt / email.txt — that is OK.
+4426454034937026|03|28|978|Andrew Grant

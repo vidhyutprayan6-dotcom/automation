@@ -1,0 +1,4 @@
+# One proxy per line (user:pass@host:port). Exact case preserved.
+# Workflow count = number of proxy lines (top → bottom). Always.
+# Cards and emails cycle separately — lists do not need matching lengths.
+9fb5:9fb5@34.130.34.81:42682
