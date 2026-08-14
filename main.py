@@ -130,17 +130,21 @@ STATE_A: Dict[str, object] = {
     "layout": "top_left",
     "coords": dict(LAYOUTS["top_left"]),
     "stripe": {
-        # Exact red-box centres from client screenshots (Aug 14 08:33, 1920x1080)
-        # State: checkout scrolled to the VERY BOTTOM, save-info still checked.
-        "email": (1113, 193),
-        "card_number": (1108, 363),
-        "card_expiry": (1097, 405),
-        "card_cvc": (1258, 404),
-        "card_name": (1129, 503),
+        # Exact field centres measured from the client's marked screenshots
+        # (Aug 14 08:49-08:51, 1024-wide captures rescaled to 1920x1080).
+        # State: checkout scrolled to the VERY BOTTOM, save-info still checked,
+        # form free of inline error lines. An extra error line under the card
+        # row pushes every following row down ~25 px, so never calibrate from a
+        # screenshot that shows one.
+        "email": (1118, 128),
+        "card_number": (1137, 302),
+        "card_expiry": (1135, 340),
+        "card_cvc": (1266, 338),
+        "card_name": (1128, 415),
         # Checkbox of "Save my information with Link…" (uncheck it)
-        "save_toggle": (1057, 619),
+        "save_toggle": (1054, 568),
         # Subscribe AFTER uncheck reflow — never scroll between toggle and Pay
-        "pay": (1223, 785),
+        "pay": (1222, 784),
     },
     "continue_candidates": list(CONTINUE_WITHOUT_CANDIDATES),
     "stripe_url": "https://buy.stripe.com/fZu7sL6GT8mkdu037idnW03",
@@ -534,6 +538,22 @@ def paste_exact(text: str) -> None:
     time.sleep(0.35)
     _release_modifier_keys()
     print("[INFO] Paste complete (AppleScript Cmd+V)")
+
+
+def dismiss_autofill_popup() -> None:
+    """
+    Escape once, to close any browser autofill list hanging over the next field.
+
+    Escape does not clear Stripe inputs, and no modal is open at this point.
+    """
+    _release_modifier_keys()
+    script = r"""
+    tell application "System Events"
+      key code 53
+    end tell
+    """
+    subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+    _release_modifier_keys()
 
 
 def press_enter() -> None:
@@ -2001,6 +2021,7 @@ def fill_stripe_field(key: str, label: str, text: str, *, use_paste: bool = Fals
         human_type(text)
     time.sleep(0.25)
     _release_modifier_keys()
+    dismiss_autofill_popup()
     wait_seconds(DELAY_BETWEEN_CARD_FIELDS, f"interval after {label}")
     print(f"[INFO] Stripe {label}: done")
     return True
@@ -2111,9 +2132,10 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     ):
         return False
 
-    # Keyboard nudge only — no mouse movement before the toggle click
-    print("[INFO] Keyboard nudge to bottom before save-toggle (mouse stays still)...")
-    scroll_browser_to_bottom()
+    # No scrolling here. The page is already at the bottom and the five entries
+    # do not change its height, so the toggle sits exactly where it was
+    # calibrated. Re-scrolling would send End/PageDown/Down into the focused
+    # cardholder-name input and could move the caret or the country dropdown.
     wait_seconds(1.5, "settle before save-toggle")
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
