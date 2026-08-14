@@ -1008,6 +1008,51 @@ def restore_manager_windows() -> None:
     print(f"[INFO] Manager unminimized → {(out.stdout or '').strip() or 'none'}")
 
 
+def raise_manager_to_front() -> None:
+    """
+    Bring the BlackBird MANAGER window to the front for the profile-setup phase.
+
+    Manager buttons (New profile / New Proxy / Create / Refresh / Play) are
+    clicked by coordinate, so the manager must sit on top for those clicks to
+    land. This is only ever called BEFORE the current proxy's browser exists
+    (i.e. between finishing one proxy and creating the next). Browsers from
+    previous proxies are never closed — they simply rest behind the manager
+    during setup. Once Play opens the new browser and the Continue modal is
+    handled, begin_browser_front_mode() puts the proxy browser back on top.
+    """
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "none"
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        repeat with w in managerWins
+          try
+            set value of attribute "AXMinimized" of w to false
+          end try
+        end repeat
+        set frontmost to true
+        repeat with w in managerWins
+          try
+            perform action "AXRaise" of w
+          end try
+          try
+            set value of attribute "AXMain" of w to true
+          end try
+        end repeat
+        return "manager_front:" & (count of managerWins)
+      end tell
+    end tell
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    print(f"[INFO] Manager raised to front → {(out.stdout or '').strip() or 'none'}")
+    time.sleep(0.3)
+
+
 def get_proxy_browser_frame() -> Optional[Tuple[int, int, int, int]]:
     """Return (x, y, w, h) of the front proxy-browser window, if any."""
     script = f"""
@@ -2410,9 +2455,13 @@ def return_to_blackbird_manager(reason: str = "") -> None:
     ensure_network_warning_dismissed()
     detect_and_apply_layout()
     restore_manager_windows()
+    # Setup phase for the NEXT proxy begins here. The current proxy's browser is
+    # finished (kept open, never closed) and would otherwise cover the manager,
+    # so bring the manager to the front — its buttons are clicked by coordinate.
+    raise_manager_to_front()
     _release_modifier_keys()
     time.sleep(0.3)
-    print("[INFO] Ready for next steps (manager restored but not forced above browsers)")
+    print("[INFO] Ready for next proxy — manager on top for New profile clicks")
 
 
 def create_profile_with_proxy(proxy: str) -> bool:
@@ -2426,6 +2475,9 @@ def create_profile_with_proxy(proxy: str) -> bool:
     detect_and_apply_layout()
     dismiss_open_sheets()
     restore_manager_windows()
+    # Manager must be on top so New profile / New Proxy / Create clicks land on
+    # it and not on a previous proxy's browser (browsers are kept open).
+    raise_manager_to_front()
     time.sleep(0.2)
 
     if not ensure_network_warning_dismissed():
@@ -2464,9 +2516,9 @@ def create_profile_with_proxy(proxy: str) -> bool:
     dismiss_network_warning()
     ensure_network_warning_dismissed()
     detect_and_apply_layout()
-    if _PROXY_BROWSER_SEEN:
-        # Existing browsers stay above manager after create
-        ensure_browser_covers_blackbird()
+    # Still in setup — Refresh/Play come next and are also manager clicks, so keep
+    # the manager on top rather than raising the old browser.
+    raise_manager_to_front()
     return True
 
 
@@ -2474,15 +2526,17 @@ def refresh_and_play() -> Tuple[bool, int]:
     """
     Refresh (newest row) → 3s → Play.
     Returns (ok, browser_window_count_before_play) so caller can detect a new browser.
-    Never raise manager over proxy browsers.
+    Manager is raised on top for these clicks (setup phase, before this proxy's
+    browser exists); browser-front policy resumes after Continue.
     """
     if not is_blackbird_running():
         print("[ERROR] BlackBird is not running — not relaunching")
         return False, 0
     detect_and_apply_layout()
     time.sleep(0.3)
-    if _PROXY_BROWSER_SEEN:
-        ensure_browser_covers_blackbird()
+    # Refresh and Play are manager buttons clicked by coordinate — keep the
+    # manager on top of any previous proxy browser (which stays open).
+    raise_manager_to_front()
     if not click_target("open_profile", "Refresh (proxy icon)", activate_app=False):
         return False, 0
     wait_seconds(DELAY_STEP, "after Refresh")
@@ -2580,7 +2634,19 @@ def run_one_workflow(
         return_to_blackbird_manager(f"workflow {index} Stripe/Pay failed")
         return "stripe_failed"
 
-    return_to_blackbird_manager(f"workflow {index}/{total} Pay done")
+    if index < total:
+        # More proxies remain: the next workflow needs the manager in front for
+        # New profile / Refresh / Play coordinate clicks.
+        return_to_blackbird_manager(f"workflow {index}/{total} Pay done — next proxy")
+    else:
+        # Final proxy: do NOT return to the manager. Natural completion must
+        # leave BlackBird and every proxy browser running for the client to
+        # inspect. Only Telegram /stop is allowed to quit BlackBird.
+        ensure_browser_covers_blackbird()
+        print(
+            "[INFO] Final proxy complete — leaving BlackBird and all proxy "
+            "browsers running; automation process will exit normally"
+        )
     print(f"[INFO] WORKFLOW {index}/{total} COMPLETE (paid)")
     return "paid"
 
@@ -2654,7 +2720,7 @@ def _startup_environment_report() -> None:
     print(f"[INFO] executable={sys.executable}")
     print(f"[INFO] platform={sys.platform}")
     print(f"[INFO] script_dir={SCRIPT_DIR}")
-    print(f"[INFO] z-order: manager NEVER on top; only Continue modal or proxy browser")
+    print(f"[INFO] z-order: manager on top ONLY during profile setup; browser on top during Stripe")
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
     print(f"[INFO] proxy-inactive: skip Continue/URL/Stripe → next New profile")
@@ -2803,6 +2869,21 @@ def main() -> None:
     print(f"[INFO] Stripe/card failed: {counts['stripe_failed']}")
     print(f"[INFO] Setup failed: {counts['setup_failed']}")
     print("=" * 60)
+    # Normal completion owns only this automation process. Do not call any
+    # BlackBird/browser shutdown routine here: the client needs the completed
+    # proxy sessions left alive for inspection. If at least one proxy browser
+    # opened, leave it visible above the manager before this process exits.
+    if _PROXY_BROWSER_SEEN:
+        ensure_browser_covers_blackbird()
+        print(
+            "[INFO] Normal completion: proxy browsers remain running and visible; "
+            "BlackBird remains running. Only automation is closing."
+        )
+    else:
+        print(
+            "[INFO] Normal completion: BlackBird remains running. "
+            "Only automation is closing (no proxy browser opened this run)."
+        )
     _write_run_results(outcome="completed", total=total, counts=counts)
     sys.exit(0)
 

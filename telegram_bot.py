@@ -31,7 +31,7 @@ from telegram.ext import (
 from process_manager import ProcessManager
 
 # Shown in welcome so you can verify the Mac is running THIS file
-BOT_UI_VERSION = "v2026-08-14-summary"
+BOT_UI_VERSION = "v2026-08-15-browser-preserve"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CARD_FILE = PROJECT_DIR / "card.txt"
@@ -239,7 +239,9 @@ def _format_run_summary(data: dict) -> str:
         f"💳 Paid (Stripe OK): {paid_of_active} active\n"
         f"⏭ Inactive (skipped): {inactive}\n"
         f"⚠️ Card/Stripe failed: {stripe_failed}\n"
-        f"🔧 Setup failed: {setup_failed}"
+        f"🔧 Setup failed: {setup_failed}\n\n"
+        "👀 BlackBird and all proxy browsers remain running for review.\n"
+        "✅ Only the automation process has closed."
     )
 
 
@@ -295,7 +297,9 @@ async def _watch_job_until_done(app: Application) -> None:
             elif code in (0, None):
                 text = (
                     "🎉 TASK COMPLETED\n"
-                    "The batch finished. Open /status for details if available."
+                    "The batch finished. Only automation closed; BlackBird and "
+                    "all proxy browsers remain running for review.\n"
+                    "Open /status for details if available."
                 )
             else:
                 text = MESSAGES["job_failed"].format(code=code)
