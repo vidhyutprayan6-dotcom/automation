@@ -1,3 +1,4 @@
-# Seed checkout email. Its trailing number increments once per proxy:
-#   proxy 1 → trioleo2947, proxy 2 → trioleo2948, proxy 3 → trioleo2949, ...
+# Only the domain of this address is used.
+# Each proxy gets a real first+last name + random 4-digit number, e.g.
+#   proxy 1 → jamesbrooks3184@outlook.com, proxy 2 → emmawilson7305@outlook.com
 trioleo2947@outlook.com

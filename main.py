@@ -3,8 +3,8 @@
 BlackBird STATE-A UI agent — macOS end-to-end workflow automation.
 
 Workflow count is driven ONLY by data.txt: one proxy line → one workflow
-(top → bottom). Cards cycle across proxies. The first email in email.txt is
-the seed; its trailing number increments once per proxy.
+(top → bottom). Cards cycle across proxies. Each proxy gets its own freshly
+generated email: random name + random 4-digit number on email.txt's domain.
 
 One workflow = New profile → proxy → Refresh → Play → if enabled →
 Continue without → Stripe URL → email+card → Pay; if inactive → skip
@@ -175,6 +175,39 @@ STRIPE_COORDS: Dict[str, Tuple[int, int]] = dict(STATE_A["stripe"])  # type: ign
 EMAIL_FILE = SCRIPT_DIR / "email.txt"
 DEFAULT_EMAIL = "trioleo2947@outlook.com"
 RESULTS_FILE = SCRIPT_DIR / "logs" / "last_run.json"
+
+# Real first/last names for generated checkout emails, so the local part looks
+# like a genuine person (e.g. jamesbrooks3184@...).
+EMAIL_FIRST_NAMES = (
+    "james", "john", "robert", "michael", "william", "david", "richard",
+    "joseph", "thomas", "charles", "christopher", "daniel", "matthew", "anthony",
+    "mark", "donald", "steven", "paul", "andrew", "joshua", "kenneth", "kevin",
+    "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan",
+    "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin",
+    "scott", "brandon", "benjamin", "samuel", "gregory", "alexander", "patrick",
+    "frank", "raymond", "jack", "dennis", "jerry", "tyler", "aaron", "henry",
+    "mary", "patricia", "jennifer", "linda", "elizabeth", "barbara", "susan",
+    "jessica", "sarah", "karen", "nancy", "lisa", "margaret", "betty", "sandra",
+    "ashley", "kimberly", "emily", "donna", "michelle", "carol", "amanda",
+    "dorothy", "melissa", "deborah", "stephanie", "rebecca", "laura", "sharon",
+    "cynthia", "kathleen", "amy", "angela", "shirley", "anna", "brenda", "emma",
+    "olivia", "sophia", "hannah", "grace", "chloe", "victoria", "natalie",
+)
+EMAIL_LAST_NAMES = (
+    "smith", "johnson", "williams", "brown", "jones", "garcia", "miller",
+    "davis", "rodriguez", "martinez", "hernandez", "lopez", "gonzalez", "wilson",
+    "anderson", "thomas", "taylor", "moore", "jackson", "martin", "lee",
+    "perez", "thompson", "white", "harris", "sanchez", "clark", "ramirez",
+    "lewis", "robinson", "walker", "young", "allen", "king", "wright", "scott",
+    "torres", "nguyen", "hill", "flores", "green", "adams", "nelson", "baker",
+    "hall", "rivera", "campbell", "mitchell", "carter", "roberts", "phillips",
+    "evans", "turner", "parker", "collins", "edwards", "stewart", "morris",
+    "murphy", "cook", "rogers", "morgan", "cooper", "peterson", "bailey",
+    "reed", "kelly", "howard", "cox", "ward", "brooks", "bennett", "gray",
+    "james", "watson", "price", "bell", "wood", "barnes", "ross", "henderson",
+)
+# Guards against the same address being generated twice in one run.
+_USED_GENERATED_EMAILS: set = set()
 
 # Back-compat aliases used elsewhere
 STRIPE_LOAD_WAIT = DELAY_STRIPE_LOAD
@@ -1944,8 +1977,8 @@ def load_cards(path: Path) -> List[str]:
 
 def load_emails(path: Path = EMAIL_FILE) -> List[str]:
     """
-    Load the checkout email seed from email.txt.
-    main() increments the first address's trailing number once per proxy.
+    Load email.txt. Only the first address's domain is used — main() generates a
+    random name and 4-digit number per proxy.
     Falls back to DEFAULT_EMAIL if the file is missing or empty.
     """
     emails: List[str] = []
@@ -1966,7 +1999,7 @@ def load_emails(path: Path = EMAIL_FILE) -> List[str]:
     if not emails:
         print(f"[WARN] No emails in {path.name} — using default {DEFAULT_EMAIL!r}")
         emails = [DEFAULT_EMAIL]
-    print(f"[INFO] email.txt loaded: seed email={emails[0]!r}")
+    print(f"[INFO] email.txt loaded: domain source={emails[0]!r}")
     return emails
 
 
@@ -1977,31 +2010,28 @@ def cyclic_pick(items: List[str], zero_based_index: int) -> str:
     return items[zero_based_index % len(items)]
 
 
-def increment_email_for_proxy(seed_email: str, zero_based_index: int) -> str:
+def random_email_for_proxy(seed_email: str) -> str:
     """
-    Generate one unique email per proxy by incrementing the seed's trailing number.
+    Build a checkout email from a real first + last name and a random 4-digit
+    number.
 
-    Example: trioleo2947@outlook.com produces trioleo2947@outlook.com,
-    trioleo2948@outlook.com, trioleo2949@outlook.com, ...
+    Only the domain is taken from email.txt; the name and number are generated
+    fresh from real-world name lists so the address looks like a real person.
+    Example: trioleo2947@outlook.com → jamesbrooks3184@outlook.com
     """
-    local, separator, domain = seed_email.strip().partition("@")
-    if not separator or not local or not domain:
+    _, separator, domain = seed_email.strip().partition("@")
+    if not separator or not domain:
         raise ValueError(f"Invalid seed email: {seed_email!r}")
 
-    suffix_start = len(local)
-    while suffix_start > 0 and local[suffix_start - 1].isdigit():
-        suffix_start -= 1
-
-    prefix = local[:suffix_start]
-    numeric_suffix = local[suffix_start:]
-    if numeric_suffix:
-        width = len(numeric_suffix)
-        number = int(numeric_suffix) + zero_based_index
-        generated_local = f"{prefix}{number:0{width}d}"
-    else:
-        generated_local = local if zero_based_index == 0 else f"{local}{zero_based_index}"
-
-    return f"{generated_local}@{domain}"
+    candidate = ""
+    for _ in range(500):
+        first = random.choice(EMAIL_FIRST_NAMES)
+        last = random.choice(EMAIL_LAST_NAMES)
+        candidate = f"{first}{last}{random.randint(1000, 9999)}@{domain}"
+        if candidate not in _USED_GENERATED_EMAILS:
+            break
+    _USED_GENERATED_EMAILS.add(candidate)
+    return candidate
 
 
 def parse_card_line(line: str) -> Dict[str, str]:
@@ -2749,7 +2779,7 @@ def _startup_environment_report() -> None:
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
     print(f"[INFO] proxy-inactive: skip Continue/URL/Stripe → next New profile")
-    print(f"[INFO] pairing: workflows=len(proxies); cards cycle; email number increments")
+    print(f"[INFO] pairing: workflows=len(proxies); cards cycle; random email per proxy")
 
     if sys.platform != "darwin":
         print("")
@@ -2786,7 +2816,7 @@ def main() -> None:
 
     try:
         # Proxy list order = data.txt top→bottom. One line → one workflow.
-        # Cards cycle. The first email is the numeric seed for all proxies.
+        # Cards cycle. Emails are generated randomly, one per proxy.
         if args.proxy:
             proxies = [args.proxy.strip()]
             print("[WARN] --proxy override: running exactly 1 workflow")
@@ -2816,27 +2846,29 @@ def main() -> None:
         proxies = proxies[: args.limit]
 
     # Hard rule: workflow count == proxy line count only.
-    # Cards wrap; each proxy gets seed email number + its zero-based index.
+    # Cards wrap; every proxy gets its own random name + random 4-digit email.
     total = len(proxies)
+    # Generated once so the preview below shows the addresses actually used.
+    generated_emails = [random_email_for_proxy(emails[0]) for _ in range(total)]
     print("")
     print("=" * 60)
     print(
         f"[INFO] RULE: {total} data.txt proxy line(s) → exactly {total} workflow(s)"
     )
     print(
-        f"[INFO] Pairing: {len(cards)} card(s) cycle; email seed {emails[0]!r} "
-        "increments once per proxy"
+        f"[INFO] Pairing: {len(cards)} card(s) cycle; one random email per proxy "
+        f"(random name + random 4 digits, domain from {emails[0]!r})"
     )
     print("[INFO] Reading order: top → bottom for every file")
     print("=" * 60)
     for i, px in enumerate(proxies, 1):
         card_preview = cyclic_pick(cards, i - 1)
-        email_preview = increment_email_for_proxy(emails[0], i - 1)
+        email_preview = generated_emails[i - 1]
         card_slot = ((i - 1) % len(cards)) + 1
         print(f"[INFO]   workflow {i}/{total}")
         print(f"[INFO]     proxy[{i}/{total}]: {px!r}")
         print(f"[INFO]     card[{card_slot}/{len(cards)}]: {card_preview!r}")
-        print(f"[INFO]     email[generated {i}/{total}]: {email_preview!r}")
+        print(f"[INFO]     email[random {i}/{total}]: {email_preview!r}")
     print(f"[INFO] Checkout URL: {args.url!r}")
     print("")
 
@@ -2850,7 +2882,7 @@ def main() -> None:
     try:
         for i, proxy in enumerate(proxies, start=1):
             card_line = cyclic_pick(cards, i - 1)
-            email = increment_email_for_proxy(emails[0], i - 1)
+            email = generated_emails[i - 1]
             print("")
             print(f"[INFO] >>> Workflow {i}/{total} — consuming data.txt proxy line {i}")
             print(f"[INFO]     proxy={proxy!r}")
