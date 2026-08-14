@@ -6,9 +6,8 @@ Workflow count is driven ONLY by data.txt: one proxy line → one workflow
 (top → bottom). Cards cycle across proxies. Each proxy gets its own freshly
 generated email: random name + random 4-digit number on email.txt's domain.
 
-One workflow = New profile → proxy → Refresh → Play → if enabled →
-Continue without → Stripe URL → email+card → Pay; if inactive → skip
-Stripe and continue with the next data.txt proxy.
+One workflow = New profile → proxy → Refresh → Play → 15s buffer →
+Stripe URL → email+card → Pay; then continue with the next data.txt proxy.
 
 STATE A is the frozen calibration restored on recoverable failure.
 """
@@ -2582,7 +2581,7 @@ def refresh_and_play() -> Tuple[bool, int]:
     Refresh (newest row) → 3s → Play.
     Returns (ok, browser_window_count_before_play) so caller can detect a new browser.
     Manager is raised on top for these clicks (setup phase, before this proxy's
-    browser exists); browser-front policy resumes after Continue.
+    browser exists); browser-front policy resumes after the post-Play buffer.
     """
     if not is_blackbird_running():
         print("[ERROR] BlackBird is not running — not relaunching")
@@ -2653,27 +2652,16 @@ def run_one_workflow(
         print(f"[ERROR] Workflow {index}/{total}: create profile failed for this line")
         return_to_blackbird_manager(f"workflow {index} create failed")
         return "setup_failed"
-    play_ok, browser_baseline = refresh_and_play()
+    play_ok, _browser_baseline = refresh_and_play()
     if not play_ok:
         print(f"[ERROR] Workflow {index}/{total}: Refresh/Play failed for this line")
         return_to_blackbird_manager(f"workflow {index} play failed")
         return "setup_failed"
 
-    # Play → only if proxy enabled (modal and/or new browser): Continue → URL → Stripe
-    # If proxy NOT enabled: no Continue/URL/Stripe clicks → next data.txt line / New profile
-    status = wait_and_click_continue_without(browser_baseline=browser_baseline)
-    if status != "ok":
-        print(
-            f"[WARN] Workflow {index}/{total}: proxy not usable ({status}). "
-            "Skipping URL/Stripe for this line — next workflow starts Create New Profile "
-            "with the next data.txt proxy."
-        )
-        return_to_blackbird_manager(f"workflow {index} proxy inactive/failed")
-        return "inactive"
-
+    # Play → wait buffer → search bar. Continue without is no longer shown.
     begin_browser_front_mode()
     wait_seconds_keep_browser_front(
-        DELAY_AFTER_CONTINUE, "after Continue without (15s, browser held on top)"
+        DELAY_AFTER_CONTINUE, "after Play (15s buffer before search bar)"
     )
 
     if not enter_url_in_address_bar(checkout_url):
@@ -2778,7 +2766,7 @@ def _startup_environment_report() -> None:
     print(f"[INFO] z-order: manager on top ONLY during profile setup; browser on top during Stripe")
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
-    print(f"[INFO] proxy-inactive: skip Continue/URL/Stripe → next New profile")
+    print(f"[INFO] after-Play: 15s buffer → address bar (no Continue without)")
     print(f"[INFO] pairing: workflows=len(proxies); cards cycle; random email per proxy")
 
     if sys.platform != "darwin":
