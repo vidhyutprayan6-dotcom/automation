@@ -3,8 +3,8 @@
 BlackBird STATE-A UI agent — macOS end-to-end workflow automation.
 
 Workflow count is driven ONLY by data.txt: one proxy line → one workflow
-(top → bottom). Cards (card.txt) and emails (email.txt) are paired to each
-proxy cyclically — lengths may differ; pairing wraps with index % len(...).
+(top → bottom). Cards cycle across proxies. The first email in email.txt is
+the seed; its trailing number increments once per proxy.
 
 One workflow = New profile → proxy → Refresh → Play → if enabled →
 Continue without → Stripe URL → email+card → Pay; if inactive → skip
@@ -1944,8 +1944,8 @@ def load_cards(path: Path) -> List[str]:
 
 def load_emails(path: Path = EMAIL_FILE) -> List[str]:
     """
-    Checkout emails from email.txt (one address per line, top → bottom).
-    Count may differ from proxies; main() cycles with index % len(emails).
+    Load the checkout email seed from email.txt.
+    main() increments the first address's trailing number once per proxy.
     Falls back to DEFAULT_EMAIL if the file is missing or empty.
     """
     emails: List[str] = []
@@ -1966,9 +1966,7 @@ def load_emails(path: Path = EMAIL_FILE) -> List[str]:
     if not emails:
         print(f"[WARN] No emails in {path.name} — using default {DEFAULT_EMAIL!r}")
         emails = [DEFAULT_EMAIL]
-    print(
-        f"[INFO] email.txt loaded: {len(emails)} email(s) (cycle over workflows)"
-    )
+    print(f"[INFO] email.txt loaded: seed email={emails[0]!r}")
     return emails
 
 
@@ -1977,6 +1975,33 @@ def cyclic_pick(items: List[str], zero_based_index: int) -> str:
     if not items:
         raise ValueError("cyclic_pick: empty list")
     return items[zero_based_index % len(items)]
+
+
+def increment_email_for_proxy(seed_email: str, zero_based_index: int) -> str:
+    """
+    Generate one unique email per proxy by incrementing the seed's trailing number.
+
+    Example: trioleo2947@outlook.com produces trioleo2947@outlook.com,
+    trioleo2948@outlook.com, trioleo2949@outlook.com, ...
+    """
+    local, separator, domain = seed_email.strip().partition("@")
+    if not separator or not local or not domain:
+        raise ValueError(f"Invalid seed email: {seed_email!r}")
+
+    suffix_start = len(local)
+    while suffix_start > 0 and local[suffix_start - 1].isdigit():
+        suffix_start -= 1
+
+    prefix = local[:suffix_start]
+    numeric_suffix = local[suffix_start:]
+    if numeric_suffix:
+        width = len(numeric_suffix)
+        number = int(numeric_suffix) + zero_based_index
+        generated_local = f"{prefix}{number:0{width}d}"
+    else:
+        generated_local = local if zero_based_index == 0 else f"{local}{zero_based_index}"
+
+    return f"{generated_local}@{domain}"
 
 
 def parse_card_line(line: str) -> Dict[str, str]:
@@ -2724,7 +2749,7 @@ def _startup_environment_report() -> None:
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
     print(f"[INFO] proxy-inactive: skip Continue/URL/Stripe → next New profile")
-    print(f"[INFO] pairing: workflows=len(proxies); cards+emails cycle with %")
+    print(f"[INFO] pairing: workflows=len(proxies); cards cycle; email number increments")
 
     if sys.platform != "darwin":
         print("")
@@ -2761,7 +2786,7 @@ def main() -> None:
 
     try:
         # Proxy list order = data.txt top→bottom. One line → one workflow.
-        # Cards + emails cycle independently (any lengths OK).
+        # Cards cycle. The first email is the numeric seed for all proxies.
         if args.proxy:
             proxies = [args.proxy.strip()]
             print("[WARN] --proxy override: running exactly 1 workflow")
@@ -2791,7 +2816,7 @@ def main() -> None:
         proxies = proxies[: args.limit]
 
     # Hard rule: workflow count == proxy line count only.
-    # Cards/emails wrap: workflow i uses cards[(i-1)%N] and emails[(i-1)%M].
+    # Cards wrap; each proxy gets seed email number + its zero-based index.
     total = len(proxies)
     print("")
     print("=" * 60)
@@ -2799,20 +2824,19 @@ def main() -> None:
         f"[INFO] RULE: {total} data.txt proxy line(s) → exactly {total} workflow(s)"
     )
     print(
-        f"[INFO] Cyclic pairing: {len(cards)} card(s), {len(emails)} email(s) "
-        "(reuse from top when lists are shorter than proxies)"
+        f"[INFO] Pairing: {len(cards)} card(s) cycle; email seed {emails[0]!r} "
+        "increments once per proxy"
     )
     print("[INFO] Reading order: top → bottom for every file")
     print("=" * 60)
     for i, px in enumerate(proxies, 1):
         card_preview = cyclic_pick(cards, i - 1)
-        email_preview = cyclic_pick(emails, i - 1)
+        email_preview = increment_email_for_proxy(emails[0], i - 1)
         card_slot = ((i - 1) % len(cards)) + 1
-        email_slot = ((i - 1) % len(emails)) + 1
         print(f"[INFO]   workflow {i}/{total}")
         print(f"[INFO]     proxy[{i}/{total}]: {px!r}")
         print(f"[INFO]     card[{card_slot}/{len(cards)}]: {card_preview!r}")
-        print(f"[INFO]     email[{email_slot}/{len(emails)}]: {email_preview!r}")
+        print(f"[INFO]     email[generated {i}/{total}]: {email_preview!r}")
     print(f"[INFO] Checkout URL: {args.url!r}")
     print("")
 
@@ -2826,7 +2850,7 @@ def main() -> None:
     try:
         for i, proxy in enumerate(proxies, start=1):
             card_line = cyclic_pick(cards, i - 1)
-            email = cyclic_pick(emails, i - 1)
+            email = increment_email_for_proxy(emails[0], i - 1)
             print("")
             print(f"[INFO] >>> Workflow {i}/{total} — consuming data.txt proxy line {i}")
             print(f"[INFO]     proxy={proxy!r}")

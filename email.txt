@@ -1,5 +1,3 @@
-# One checkout email per line (top → bottom).
-# Emails cycle across workflows the same way as cards:
-#   workflow 1 → line 1, workflow 2 → line 2, ... then wrap to line 1.
-# Length may differ from data.txt / card.txt — that is OK.
+# Seed checkout email. Its trailing number increments once per proxy:
+#   proxy 1 → trioleo2947, proxy 2 → trioleo2948, proxy 3 → trioleo2949, ...
 trioleo2947@outlook.com
