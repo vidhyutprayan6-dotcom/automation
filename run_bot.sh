@@ -25,16 +25,18 @@ if [[ ! -f telegram_bot.py ]]; then
 fi
 
 # Prove this folder has the 5-button UI before starting
-for needle in 'KeyboardButton("/card")' 'KeyboardButton("/proxy")' 'v2026-08-14-summary'; do
+for needle in 'KeyboardButton("/card")' 'KeyboardButton("/proxy")' 'BOT_UI_VERSION'; do
   if ! grep -qF "$needle" telegram_bot.py; then
-    echo "ERROR: telegram_bot.py is outdated (missing: $needle)"
-    echo "Pull/copy the latest project files into: $ROOT"
+    echo "ERROR: telegram_bot.py is outdated or incomplete (missing: $needle)"
+    echo "Copy the LATEST project files into: $ROOT"
+    echo "Required at minimum: main.py telegram_bot.py process_manager.py run_bot.sh requirements.txt"
     exit 1
   fi
 done
 
+UI_VER="$(grep -E '^BOT_UI_VERSION\s*=' telegram_bot.py | head -1 | sed -E 's/.*=\s*\"([^\"]+)\".*/\1/')"
 echo "[run_bot] Project: $ROOT"
-echo "[run_bot] UI check OK — buttons: /status /start /card /proxy /stop"
+echo "[run_bot] UI check OK — version=${UI_VER:-unknown} — buttons: /status /start /card /proxy /stop"
 
 if [[ ! -x .venv/bin/python ]]; then
   echo "Creating .venv ..."
@@ -59,5 +61,5 @@ if command -v pgrep >/dev/null 2>&1; then
 fi
 
 echo "Starting Telegram bot (Ctrl+C to stop the bot only; use /stop for automation)..."
-echo "After start, open Telegram and send /start — you must see UI v2026-08-14-summary"
+echo "After start, open Telegram and send /start — menu must show UI ${UI_VER:-BOT_UI_VERSION}"
 exec .venv/bin/python telegram_bot.py
