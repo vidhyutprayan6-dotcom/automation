@@ -130,15 +130,17 @@ STATE_A: Dict[str, object] = {
     "layout": "top_left",
     "coords": dict(LAYOUTS["top_left"]),
     "stripe": {
-        # Exact click centers (STATE A, 1920x1080 scrolled checkout)
-        "email": (1093, 182),
-        "card_number": (1112, 353),
-        "card_expiry": (1091, 393),
-        "card_cvc": (1258, 391),
-        "card_name": (1118, 466),
-        # Uncheck "Save my information…" before Pay (red box on screenshot)
-        "save_toggle": (1052, 620),
-        "pay": (1224, 823),
+        # Exact red-box centres from client screenshots (Aug 14 08:33, 1920x1080)
+        # State: checkout scrolled to the VERY BOTTOM, save-info still checked.
+        "email": (1113, 193),
+        "card_number": (1108, 363),
+        "card_expiry": (1097, 405),
+        "card_cvc": (1258, 404),
+        "card_name": (1129, 503),
+        # Checkbox of "Save my information with Link…" (uncheck it)
+        "save_toggle": (1057, 619),
+        # Subscribe AFTER uncheck reflow — never scroll between toggle and Pay
+        "pay": (1223, 785),
     },
     "continue_candidates": list(CONTINUE_WITHOUT_CANDIDATES),
     "stripe_url": "https://buy.stripe.com/fZu7sL6GT8mkdu037idnW03",
@@ -379,65 +381,99 @@ def _release_modifier_keys() -> None:
     time.sleep(0.03)
 
 
+def _release_mouse_buttons() -> None:
+    """Guarantee left/right/other buttons are UP before any cursor move."""
+    try:
+        import Quartz
+
+        cur = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        x, y = float(cur.x), float(cur.y)
+        for button, up_type in (
+            (Quartz.kCGMouseButtonLeft, Quartz.kCGEventLeftMouseUp),
+            (Quartz.kCGMouseButtonRight, Quartz.kCGEventRightMouseUp),
+            (Quartz.kCGMouseButtonCenter, Quartz.kCGEventOtherMouseUp),
+        ):
+            _post_mouse_event(up_type, x, y, button)
+    except Exception:  # noqa: BLE001
+        try:
+            pyautogui.mouseUp(button="left")
+            pyautogui.mouseUp(button="right")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _quartz_left_click(x: float, y: float) -> None:
     """
-    Explicit left-button down/up via Quartz at (x, y).
-    Warps cursor first so the click lands even if bezier move was blocked.
+    One stationary left click: cursor is already at (x, y).
+
+    Down and Up are posted at the identical point with no MouseMoved between
+    them. Any movement while the button is down paints the blue drag-select
+    seen on Stripe.
     """
     import Quartz
 
     xf, yf = float(x), float(y)
+    _release_mouse_buttons()
     _quartz_warp(xf, yf)
-    time.sleep(0.03)
-    _post_mouse_event(Quartz.kCGEventMouseMoved, xf, yf, Quartz.kCGMouseButtonLeft)
-    time.sleep(0.02)
-    _post_mouse_event(Quartz.kCGEventLeftMouseDown, xf, yf, Quartz.kCGMouseButtonLeft)
     time.sleep(0.05)
+    _post_mouse_event(Quartz.kCGEventLeftMouseDown, xf, yf, Quartz.kCGMouseButtonLeft)
+    time.sleep(0.04)
     _post_mouse_event(Quartz.kCGEventLeftMouseUp, xf, yf, Quartz.kCGMouseButtonLeft)
+    _release_mouse_buttons()
     print(f"[INFO] Quartz left-click at ({int(round(xf))}, {int(round(yf))})")
 
 
 def human_click_at(x: float, y: float) -> None:
-    """Move with bezier, release modifiers, then Quartz left-click (always fires)."""
+    """Move first (button UP), then one stationary Quartz click."""
     _release_modifier_keys()
+    _release_mouse_buttons()
     cur_x, cur_y = pyautogui.position()
     move_mouse_humanly(cur_x, cur_y, x, y)
     _release_modifier_keys()
-    time.sleep(0.05)
+    _release_mouse_buttons()
+    time.sleep(0.08)
     try:
         _quartz_left_click(x, y)
     except Exception as exc:  # noqa: BLE001
         print(f"[WARN] Quartz click failed ({exc}); falling back to pyautogui.click")
         _release_modifier_keys()
+        _release_mouse_buttons()
         try:
             _quartz_warp(x, y)
         except Exception:  # noqa: BLE001
             pass
         pyautogui.click(int(round(x)), int(round(y)))
     _release_modifier_keys()
+    _release_mouse_buttons()
 
 
 def human_move_to(x: float, y: float) -> None:
-    """Bezier move only — no mouse-down (avoids blue drag-select on Stripe)."""
+    """Bezier move only — button must stay UP the whole time (no drag-select)."""
     _release_modifier_keys()
+    _release_mouse_buttons()
     cur_x, cur_y = pyautogui.position()
     move_mouse_humanly(cur_x, cur_y, x, y)
     _release_modifier_keys()
+    _release_mouse_buttons()
 
 
 def fast_click_at(x: float, y: float) -> None:
-    """Short bezier + Quartz click — used for Continue without (must be ASAP)."""
+    """Short bezier (button UP) + one stationary Quartz click."""
     _release_modifier_keys()
+    _release_mouse_buttons()
     cur_x, cur_y = pyautogui.position()
     move_mouse_humanly(cur_x, cur_y, x, y, duration=random.uniform(0.08, 0.18))
     _release_modifier_keys()
+    _release_mouse_buttons()
     try:
         _quartz_left_click(x, y)
     except Exception as exc:  # noqa: BLE001
         print(f"[WARN] Quartz fast-click failed ({exc}); pyautogui fallback")
         _release_modifier_keys()
+        _release_mouse_buttons()
         pyautogui.click(int(round(x)), int(round(y)))
     _release_modifier_keys()
+    _release_mouse_buttons()
 
 
 def _type_char_quartz(ch: str) -> None:
@@ -590,6 +626,8 @@ def move_mouse_humanly(
     end_y: float,
     duration: Optional[float] = None,
 ) -> None:
+    # Never drag: button must be UP for the entire path.
+    _release_mouse_buttons()
     if duration is None:
         duration = random.uniform(0.3, 0.8)
 
@@ -1918,10 +1956,12 @@ def load_email(path: Path = EMAIL_FILE) -> str:
     return load_emails(path)[0]
 
 
-def click_stripe(key: str, label: str, *, double_tap: bool = False) -> bool:
+def click_stripe(key: str, label: str) -> bool:
     """
-    Click exact Stripe field coordinate from STATE A.
-    Card iframes may use double_tap for focus (no drag).
+    Exactly ONE stationary click on the calibrated rectangle centre.
+
+    Move (button UP) → pause → down/up at the same point. No double-click,
+    no select-all, no drag.
     """
     if _BROWSER_FRONT_MODE:
         ensure_browser_covers_blackbird()
@@ -1930,23 +1970,19 @@ def click_stripe(key: str, label: str, *, double_tap: bool = False) -> bool:
         print(f"[ERROR] Missing Stripe coord: {key}")
         return False
     x, y = scale_point(*base)
-    print(f"[INFO] Stripe {label}: exact click at ({x}, {y}) [calibrated {base}]")
+    print(f"[INFO] Stripe {label}: ONE centre click at ({x}, {y}) [calibrated {base}]")
     _release_modifier_keys()
+    _release_mouse_buttons()
     human_move_to(x, y)
-    time.sleep(0.12)
+    time.sleep(0.15)
     _release_modifier_keys()
+    _release_mouse_buttons()
     try:
         _quartz_left_click(x, y)
     except Exception:  # noqa: BLE001
         pyautogui.click(int(round(x)), int(round(y)))
-    if double_tap:
-        time.sleep(0.18)
-        _release_modifier_keys()
-        try:
-            _quartz_left_click(x, y)
-        except Exception:  # noqa: BLE001
-            pyautogui.click(int(round(x)), int(round(y)))
     _release_modifier_keys()
+    _release_mouse_buttons()
     time.sleep(0.3)
     if _BROWSER_FRONT_MODE:
         ensure_browser_covers_blackbird()
@@ -1954,13 +1990,10 @@ def click_stripe(key: str, label: str, *, double_tap: bool = False) -> bool:
 
 
 def fill_stripe_field(key: str, label: str, text: str, *, use_paste: bool = False) -> bool:
-    """Click one Stripe field, clear it, enter the full value, then wait 3s."""
-    iframe = key in ("email", "card_number", "card_expiry", "card_cvc", "card_name")
-    if not click_stripe(key, label, double_tap=iframe):
+    """One centre click, then type/paste. Never Cmd+A (that paints blue selection)."""
+    if not click_stripe(key, label):
         return False
     time.sleep(0.35)
-    clear_field_macos()
-    time.sleep(0.2)
     print(f"[INFO] Stripe {label}: entering {text!r}")
     if use_paste:
         paste_exact(text)
@@ -1975,17 +2008,18 @@ def fill_stripe_field(key: str, label: str, text: str, *, use_paste: bool = Fals
 
 def scroll_browser_to_bottom() -> None:
     """
-    Scroll proxy browser to the very bottom using keyboard ONLY.
-    Mouse must NOT move during this step — field clicks happen only after scroll.
+    Scroll to the very bottom with keyboard ONLY.
+
+    The mouse pointer must not move at all during this step. Field clicks start
+    only after scroll returns and the caller waits 3 seconds.
     """
-    # Focus browser via Accessibility (no mouse)
     ensure_browser_covers_blackbird()
     demote_manager_windows(minimize=True)
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
+    _release_mouse_buttons()
 
     print("[INFO] Scrolling to VERY BOTTOM via keyboard (mouse stays still)...")
-    # End (119) + Page Down (121) sent to BlackBird while browser is AXMain
     script = r"""
     tell application "System Events"
       if not (exists process "BlackBird") then return "none"
@@ -2018,14 +2052,13 @@ def scroll_browser_to_bottom() -> None:
     time.sleep(0.35)
     demote_manager_windows(minimize=True)
     ensure_browser_covers_blackbird()
-    print("[INFO] Scroll-to-bottom complete — mouse still unmoved; ready for field clicks")
+    print("[INFO] Scroll-to-bottom complete — mouse still unmoved; ready for 3s settle")
 
 
 def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     """
-    Scrolled-bottom Stripe fill:
-      scroll → wait 3s → email → card fields →
-      re-scroll bottom → uncheck save toggle → Pay → wait 60s
+    scroll (mouse frozen) → wait 3s → one click per field →
+    uncheck save-info → wait reflow → Subscribe → wait 60s
     """
     ensure_browser_covers_blackbird()
     demote_manager_windows(minimize=True)
@@ -2034,8 +2067,8 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     STRIPE_COORDS = dict(STATE_A["stripe"])  # type: ignore[arg-type]
 
     print(
-        "[INFO] Stripe checkout: scroll → fields → re-scroll → "
-        "UNCHECK save-toggle → Pay → wait 60s"
+        "[INFO] Stripe checkout: scroll → 3s settle → single-click fields → "
+        "UNCHECK save-toggle → Subscribe → wait 60s"
     )
     print(f"[INFO] Card row: {card['raw']!r}")
     print(
@@ -2052,10 +2085,12 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
         print("[ERROR] Missing checkout email")
         return False
 
-    # Mouse must not move until first scroll finishes
+    # Mouse must not move until first scroll finishes + 3s settle
+    _release_mouse_buttons()
     scroll_browser_to_bottom()
-    wait_seconds(DELAY_AFTER_STRIPE_SCROLL, "after scroll — mouse may move only now")
+    wait_seconds(DELAY_AFTER_STRIPE_SCROLL, "settle after scroll (cursor still frozen)")
     ensure_browser_covers_blackbird()
+    _release_mouse_buttons()
 
     if not fill_stripe_field("email", "1 Email", email, use_paste=True):
         return False
@@ -2076,24 +2111,25 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     ):
         return False
 
-    # Re-scroll fully down so save-toggle + Pay match scrolled calibration
-    print("[INFO] Re-scrolling to very bottom before save-toggle / Pay...")
+    # Keyboard nudge only — no mouse movement before the toggle click
+    print("[INFO] Keyboard nudge to bottom before save-toggle (mouse stays still)...")
     scroll_browser_to_bottom()
-    wait_seconds(1.5, "settle after re-scroll for save-toggle")
+    wait_seconds(1.5, "settle before save-toggle")
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
+    _release_mouse_buttons()
 
-    # Exact single click on checkbox inside red rectangle (do NOT double-tap)
-    if not click_stripe(
-        "save_toggle", "6 Save-info checkbox (uncheck)", double_tap=False
-    ):
+    if not click_stripe("save_toggle", "6 Save-info checkbox (uncheck)"):
         return False
-    time.sleep(0.6)
 
+    # Uncheck removes the phone row; Subscribe moves to its calibrated spot.
+    # No scrolling between toggle and Subscribe.
+    wait_seconds(2.0, "page reflow after unchecking save-info")
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
+    _release_mouse_buttons()
     time.sleep(0.25)
-    if not click_stripe("pay", "7 Pay button", double_tap=False):
+    if not click_stripe("pay", "7 Pay button"):
         return False
     print("[INFO] Pay clicked — waiting 60s for payment processing...")
     wait_seconds(DELAY_AFTER_PAY, "payment processing after Pay")
