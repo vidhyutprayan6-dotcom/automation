@@ -1,0 +1,17 @@
+# The project is edited on Windows and run on macOS, so line endings are pinned
+# here rather than left to each machine's git config. A shell script that
+# reaches the Mac with CRLF endings fails immediately and confusingly, because
+# the carriage return becomes part of the interpreter name:
+#   /usr/bin/env: 'bash\r': No such file or directory
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.command text eol=lf
+*.py      text eol=lf
+*.txt     text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+
+*.png binary
+*.jpg binary
+*.icns binary

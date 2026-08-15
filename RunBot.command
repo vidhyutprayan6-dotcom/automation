@@ -8,9 +8,9 @@ echo " BlackBird Telegram Bot"
 echo "=============================================="
 echo ""
 
-chmod +x run_bot.sh 2>/dev/null || true
-
-./run_bot.sh
+# Called through bash rather than ./run_bot.sh, so a lost executable bit — from
+# an unzip, an AnyDesk copy, or a checkout made on Windows — cannot stop it.
+bash run_bot.sh
 STATUS=$?
 
 echo ""

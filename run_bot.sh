@@ -19,10 +19,13 @@ if ! grep -qE '^TELEGRAM_BOT_TOKEN=.+' .env 2>/dev/null; then
   exit 1
 fi
 
-if [[ ! -f telegram_bot.py ]]; then
-  echo "ERROR: telegram_bot.py missing in $ROOT"
-  exit 1
-fi
+for f in telegram_bot.py process_manager.py main.py stripe_vision.py; do
+  if [[ ! -f "$f" ]]; then
+    echo "ERROR: $f missing in $ROOT"
+    echo "Copy the whole project folder across, not just a few files."
+    exit 1
+  fi
+done
 
 # Prove this folder has the 5-button UI before starting
 for needle in 'KeyboardButton("/card")' 'KeyboardButton("/proxy")' 'BOT_UI_VERSION'; do
