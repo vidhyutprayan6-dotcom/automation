@@ -2,8 +2,7 @@
 #
 # BlackBird Automation launcher (macOS).
 #
-#   Terminal:      bash run.sh
-#   Double-click:  Run.command
+#   Terminal:  bash run.sh
 #
 # "bash run.sh" is the documented form on purpose: it works even when the
 # executable bit did not survive the trip to this machine, which happens with

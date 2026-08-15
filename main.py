@@ -2936,18 +2936,13 @@ def _startup_environment_report() -> None:
     print(f"[INFO] z-order: manager on top ONLY during profile setup; browser on top during Stripe")
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
-    print(f"[INFO] after-Play: 15s buffer → address bar (no Continue without)")
+    print(f"[INFO] after-Play: 30s buffer → address bar (no Continue without)")
     print(f"[INFO] pairing: workflows=len(proxies); cards cycle; random email per proxy")
 
     if sys.platform != "darwin":
         print("")
         print("[ERROR] This automation requires macOS (BlackBird + Accessibility + osascript).")
-        print("[ERROR] A Windows .exe only opens this console — it cannot control BlackBird.")
-        print("[ERROR] On the Mac:")
-        print("[ERROR]   1) python3 build_exe.py")
-        print("[ERROR]   2) give the client the dist/ folder")
-        print("[ERROR]   3) client double-clicks Run.command (opens Terminal and runs)")
-        print("[ERROR] Or without building:  chmod +x run.sh && ./run.sh")
+        print("[ERROR] On the Mac, from the project folder, run:  bash run.sh")
         print("")
         if frozen:
             sys.exit(2)

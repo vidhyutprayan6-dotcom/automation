@@ -9,12 +9,6 @@ venv/
 env/
 .env
 
-# PyInstaller
-build/
-*.spec
-app_icon.iconset/
-app_icon.icns
-
 # OS / editor
 .DS_Store
 .AppleDouble
@@ -22,14 +16,6 @@ app_icon.icns
 .vscode/
 .idea/
 
-# Detector overlays written by tools/test_stripe_vision.py
-tools/*-detected.png
-
 # Logs / runtime state
 logs/
 *.log
-*.MOV
-*.mov
-*.mp4
-*.dmg
-*.pkg
