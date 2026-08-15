@@ -31,7 +31,7 @@ from telegram.ext import (
 from process_manager import ProcessManager
 
 # Shown in welcome so you can verify the Mac is running THIS file
-BOT_UI_VERSION = "v2026-08-15-replace-data"
+BOT_UI_VERSION = "v2026-08-15-shared-actions"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CARD_FILE = PROJECT_DIR / "card.txt"
@@ -78,6 +78,7 @@ MESSAGES = {
     ),
     "started": (
         "▶️ START: job is RUNNING now.\n"
+        "Other connected users have been notified.\n"
         "You will receive a 🎉 completion message when it finishes by itself."
     ),
     "already_running": (
@@ -88,7 +89,8 @@ MESSAGES = {
     "stopped": (
         "🛑 STOP: you ended the job.\n"
         "Automation process terminated.\n"
-        "BlackBird app closed."
+        "BlackBird app closed.\n"
+        "Other connected users have been notified."
     ),
     "not_running": (
         "💤 STOP: nothing was running.\n"
@@ -207,6 +209,46 @@ def _remember_chat(update: Update) -> None:
     if chat.id not in _notify_chat_ids:
         _notify_chat_ids.add(chat.id)
         _save_notify_chats()
+
+
+def _actor_label(update: Update) -> str:
+    """Human-readable identity for shared action notifications."""
+    user = update.effective_user
+    if user is None:
+        return "Another user"
+    if user.username:
+        return f"@{user.username}"
+    if user.full_name:
+        return user.full_name
+    return f"User {user.id}"
+
+
+async def _notify_other_users(
+    app: Application,
+    update: Update,
+    action_text: str,
+) -> None:
+    """Send an action notification to every connected chat except the actor."""
+    _remember_chat(update)
+    if not _notify_chat_ids:
+        _load_notify_chats()
+    actor_chat_id = update.effective_chat.id if update.effective_chat else None
+    text = f"👥 SHARED ACTIVITY\n{_actor_label(update)} {action_text}"
+    for chat_id in list(_notify_chat_ids):
+        if chat_id == actor_chat_id:
+            continue
+        try:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=main_keyboard(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed shared-action notification to chat %s: %s",
+                chat_id,
+                exc,
+            )
 
 
 def _read_run_results() -> dict | None:
@@ -443,6 +485,11 @@ async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if ok:
         _start_job_watcher(context.application)
         await update.message.reply_text(MESSAGES["started"], reply_markup=main_keyboard())
+        await _notify_other_users(
+            context.application,
+            update,
+            "started the automation. ▶️",
+        )
     elif key == "already_running":
         await update.message.reply_text(
             MESSAGES["already_running"], reply_markup=main_keyboard()
@@ -460,6 +507,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
       2) Keyboard button /start after that   → start automation
     """
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     # Leaving edit mode if user presses /start from elsewhere
     if context.user_data.get(EDIT_MODE_KEY):
         _clear_edit_state(context)
@@ -473,6 +521,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             BOT_UI_VERSION,
         )
         await show_main_menu(update, MESSAGES["welcome"])
+        await _notify_other_users(
+            context.application,
+            update,
+            "connected to the bot. 👋",
+        )
         return
 
     logger.info("/start (keyboard — start automation) from user_id=%s", uid)
@@ -494,6 +547,11 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         if ok:
             await update.message.reply_text(MESSAGES["stopped"], reply_markup=main_keyboard())
+            await _notify_other_users(
+                context.application,
+                update,
+                "stopped the automation and closed BlackBird. 🛑",
+            )
         elif key == "not_running":
             await update.message.reply_text(
                 MESSAGES["not_running"], reply_markup=main_keyboard()
@@ -513,30 +571,48 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = await asyncio.to_thread(_status_message)
     if update.message:
         await update.message.reply_text(text, reply_markup=main_keyboard())
+        await _notify_other_users(
+            context.application,
+            update,
+            "checked the automation status. 🔎",
+        )
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Force-refresh the 5-button keyboard (does not start automation)."""
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     logger.info("/menu from user_id=%s ui=%s", uid, BOT_UI_VERSION)
     context.user_data[USER_CONNECTED_KEY] = True
     _clear_edit_state(context)
     await show_main_menu(update, MESSAGES["welcome"])
+    await _notify_other_users(
+        context.application,
+        update,
+        "opened the main menu. 📋",
+    )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Leave /card or /proxy input without saving and restore the main menu."""
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     mode = context.user_data.get(EDIT_MODE_KEY)
     logger.info("/cancel from user_id=%s mode=%s", uid, mode)
     context.user_data[USER_CONNECTED_KEY] = True
     _clear_edit_state(context)
     await show_main_menu(update, MESSAGES["input_cancelled"])
+    await _notify_other_users(
+        context.application,
+        update,
+        f"cancelled {mode or 'input'} mode without saving. ↩️",
+    )
 
 
 async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enter card input mode — show stored count, then /save and /cancel."""
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     context.user_data[USER_CONNECTED_KEY] = True
     context.user_data[EDIT_MODE_KEY] = "card"
     context.user_data[EDIT_BUFFER_KEY] = []
@@ -551,11 +627,17 @@ async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             MESSAGES["card_prompt"],
             reply_markup=save_keyboard(),
         )
+        await _notify_other_users(
+            context.application,
+            update,
+            "opened card replacement mode. 💳",
+        )
 
 
 async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enter proxy input mode — show stored count, then /save and /cancel."""
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     context.user_data[USER_CONNECTED_KEY] = True
     context.user_data[EDIT_MODE_KEY] = "proxy"
     context.user_data[EDIT_BUFFER_KEY] = []
@@ -570,11 +652,17 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             MESSAGES["proxy_prompt"],
             reply_markup=save_keyboard(),
         )
+        await _notify_other_users(
+            context.application,
+            update,
+            "opened proxy replacement mode. 🌐",
+        )
 
 
 async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Save buffered card/proxy lines to the matching txt file."""
     uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
     mode = context.user_data.get(EDIT_MODE_KEY)
     buffer: list[str] = list(context.user_data.get(EDIT_BUFFER_KEY) or [])
     logger.info("/save from user_id=%s mode=%s buffer_lines=%s", uid, mode, len(buffer))
@@ -611,6 +699,11 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ),
                 reply_markup=main_keyboard(),
             )
+            await _notify_other_users(
+                context.application,
+                update,
+                f"replaced the stored card records ({previous} → {len(incoming)}). 💳",
+            )
             logger.info(
                 "Cards replaced → previous=%s total=%s file=%s",
                 previous,
@@ -632,6 +725,11 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     previous=previous, total=len(incoming)
                 ),
                 reply_markup=main_keyboard(),
+            )
+            await _notify_other_users(
+                context.application,
+                update,
+                f"replaced the stored proxy records ({previous} → {len(incoming)}). 🌐",
             )
             logger.info(
                 "Proxies replaced → previous=%s total=%s file=%s",
@@ -659,6 +757,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     mode = context.user_data.get(EDIT_MODE_KEY)
     if mode not in ("card", "proxy"):
         return
+    _remember_chat(update)
 
     lines = _parse_incoming_lines(text)
     if not lines:
@@ -680,6 +779,12 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         MESSAGES["buffered"].format(count=len(buffer)),
         reply_markup=save_keyboard(),
+    )
+    await _notify_other_users(
+        context.application,
+        update,
+        f"buffered {len(lines)} new {mode} row(s) for replacement "
+        f"({len(buffer)} pending). 📥",
     )
 
 
