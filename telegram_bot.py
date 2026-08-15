@@ -31,7 +31,7 @@ from telegram.ext import (
 from process_manager import ProcessManager
 
 # Shown in welcome so you can verify the Mac is running THIS file
-BOT_UI_VERSION = "v2026-08-15-browser-preserve"
+BOT_UI_VERSION = "v2026-08-15-replace-data"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CARD_FILE = PROJECT_DIR / "card.txt"
@@ -73,8 +73,8 @@ MESSAGES = {
         "• /status — current job status\n"
         "• /start — start automation\n"
         "• /stop — stop automation + BlackBird\n"
-        "• /card — add cards (shows stored count)\n"
-        "• /proxy — add proxies (shows stored count)"
+        "• /card — replace cards (shows stored count)\n"
+        "• /proxy — replace proxies (shows stored count)"
     ),
     "started": (
         "▶️ START: job is RUNNING now.\n"
@@ -130,7 +130,8 @@ MESSAGES = {
         "number|MM|YY|CVC|Name\n\n"
         "Example:\n"
         "4426454034937026|03|28|978|Andrew Grant\n\n"
-        "New rows are APPENDED. Duplicates are skipped.\n"
+        "The newly saved rows REPLACE all previously stored cards.\n"
+        "Duplicates within the new rows are removed.\n"
         "Press /save to keep, or /cancel to return."
     ),
     "proxy_prompt": (
@@ -139,7 +140,8 @@ MESSAGES = {
         "user:pass@host:port\n\n"
         "Example:\n"
         "9fb5:9fb5@34.130.34.81:42682\n\n"
-        "New rows are APPENDED. Duplicates are skipped.\n"
+        "The newly saved rows REPLACE all previously stored proxies.\n"
+        "Duplicates within the new rows are removed.\n"
         "Press /save to keep, or /cancel to return."
     ),
     "buffered": (
@@ -153,20 +155,14 @@ MESSAGES = {
     "save_cancelled": "ℹ️ SAVE ignored — not in /card or /proxy mode.",
     "input_cancelled": "↩️ CANCEL: returned to menu. Nothing was saved.",
     "card_saved": (
-        "💾 CARD SAVE DONE\n"
-        "• Added: {added}\n"
-        "• Skipped duplicates: {skipped}\n"
+        "💾 CARD REPLACEMENT DONE\n"
+        "• Previous records removed: {previous}\n"
         "• Total stored now: {total}"
     ),
     "proxy_saved": (
-        "💾 PROXY SAVE DONE\n"
-        "• Added: {added}\n"
-        "• Skipped duplicates: {skipped}\n"
+        "💾 PROXY REPLACEMENT DONE\n"
+        "• Previous records removed: {previous}\n"
         "• Total stored now: {total}"
-    ),
-    "all_duplicates": (
-        "ℹ️ SAVE: all rows already exist.\n"
-        "Nothing new added. Total stored now: {total}"
     ),
     "save_failed": "❌ Failed to save. Check VPS logs.",
     "card_invalid": (
@@ -428,32 +424,6 @@ def _read_existing_data_lines(path: Path) -> list[str]:
     return _parse_incoming_lines(path.read_text(encoding="utf-8"))
 
 
-def _merge_append_unique(
-    existing: list[str],
-    incoming: list[str],
-) -> tuple[list[str], int, int]:
-    """
-    Append incoming rows onto existing rows.
-    Drop any duplicate exact rows (existing wins; new duplicates skipped).
-    Returns (merged_unique, added_count, skipped_duplicate_count).
-    """
-    merged = _dedupe_preserve_order(existing)
-    seen = set(merged)
-    added = 0
-    skipped = 0
-    for line in incoming:
-        key = line.strip()
-        if not key:
-            continue
-        if key in seen:
-            skipped += 1
-            continue
-        seen.add(key)
-        merged.append(key)
-        added += 1
-    return merged, added, skipped
-
-
 def _write_card_file(lines: list[str]) -> None:
     body = CARD_HEADER + "\n".join(lines) + ("\n" if lines else "")
     CARD_FILE.write_text(body, encoding="utf-8")
@@ -632,27 +602,19 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     MESSAGES["card_invalid"], reply_markup=save_keyboard()
                 )
                 return
-            existing = _filter_card_lines(_read_existing_data_lines(CARD_FILE))
-            merged, added, skipped = _merge_append_unique(existing, incoming)
-            await asyncio.to_thread(_write_card_file, merged)
+            previous = _count_file_rows(CARD_FILE, "card")
+            await asyncio.to_thread(_write_card_file, incoming)
             _clear_edit_state(context)
-            if added == 0:
-                await update.message.reply_text(
-                    MESSAGES["all_duplicates"].format(total=len(merged)),
-                    reply_markup=main_keyboard(),
-                )
-            else:
-                await update.message.reply_text(
-                    MESSAGES["card_saved"].format(
-                        added=added, skipped=skipped, total=len(merged)
-                    ),
-                    reply_markup=main_keyboard(),
-                )
+            await update.message.reply_text(
+                MESSAGES["card_saved"].format(
+                    previous=previous, total=len(incoming)
+                ),
+                reply_markup=main_keyboard(),
+            )
             logger.info(
-                "Cards merge → added=%s skipped=%s total=%s file=%s",
-                added,
-                skipped,
-                len(merged),
+                "Cards replaced → previous=%s total=%s file=%s",
+                previous,
+                len(incoming),
                 CARD_FILE,
             )
         else:
@@ -662,27 +624,19 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     MESSAGES["proxy_invalid"], reply_markup=save_keyboard()
                 )
                 return
-            existing = _filter_proxy_lines(_read_existing_data_lines(DATA_FILE))
-            merged, added, skipped = _merge_append_unique(existing, incoming)
-            await asyncio.to_thread(_write_proxy_file, merged)
+            previous = _count_file_rows(DATA_FILE, "proxy")
+            await asyncio.to_thread(_write_proxy_file, incoming)
             _clear_edit_state(context)
-            if added == 0:
-                await update.message.reply_text(
-                    MESSAGES["all_duplicates"].format(total=len(merged)),
-                    reply_markup=main_keyboard(),
-                )
-            else:
-                await update.message.reply_text(
-                    MESSAGES["proxy_saved"].format(
-                        added=added, skipped=skipped, total=len(merged)
-                    ),
-                    reply_markup=main_keyboard(),
-                )
+            await update.message.reply_text(
+                MESSAGES["proxy_saved"].format(
+                    previous=previous, total=len(incoming)
+                ),
+                reply_markup=main_keyboard(),
+            )
             logger.info(
-                "Proxies merge → added=%s skipped=%s total=%s file=%s",
-                added,
-                skipped,
-                len(merged),
+                "Proxies replaced → previous=%s total=%s file=%s",
+                previous,
+                len(incoming),
                 DATA_FILE,
             )
     except Exception as exc:  # noqa: BLE001
@@ -736,8 +690,8 @@ async def _post_init(app: Application) -> None:
             BotCommand("start", "Connect / start automation"),
             BotCommand("status", "Check running status"),
             BotCommand("stop", "Stop automation + BlackBird"),
-            BotCommand("card", "Add cards → /save"),
-            BotCommand("proxy", "Add proxies → /save"),
+            BotCommand("card", "Replace cards → /save"),
+            BotCommand("proxy", "Replace proxies → /save"),
             BotCommand("save", "Save pasted card/proxy data"),
             BotCommand("cancel", "Leave card/proxy input without saving"),
             BotCommand("menu", "Refresh the 5-button keyboard"),
