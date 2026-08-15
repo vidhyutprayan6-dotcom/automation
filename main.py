@@ -6,8 +6,11 @@ Workflow count is driven ONLY by data.txt: one proxy line → one workflow
 (top → bottom). Cards cycle across proxies. Each proxy gets its own freshly
 generated email: random name + random 4-digit number on email.txt's domain.
 
-One workflow = New profile → proxy → Refresh → Play → 15s buffer →
+One workflow = New profile → proxy → Refresh → Play → 30s buffer →
 Stripe URL → email+card → Pay; then continue with the next data.txt proxy.
+
+Checkout fields are located by reading the page off the screen rather than from
+fixed coordinates, so the same run works whatever country the proxy resolves to.
 
 STATE A is the frozen calibration restored on recoverable failure.
 """
@@ -37,6 +40,8 @@ except ImportError as exc:
         "  .venv/bin/python -m pip install -r requirements.txt\n"
         f"Original error: {exc}"
     ) from exc
+
+from stripe_vision import StripeForm, detect_stripe_form
 
 # ---------------------------------------------------------------------------
 # Config
@@ -128,23 +133,10 @@ COORDS: Dict[str, Optional[Tuple[int, int]]] = dict(LAYOUTS[ACTIVE_LAYOUT])
 STATE_A: Dict[str, object] = {
     "layout": "top_left",
     "coords": dict(LAYOUTS["top_left"]),
-    "stripe": {
-        # Exact field centres measured from the client's marked screenshots
-        # (Aug 14 08:49-08:51, 1024-wide captures rescaled to 1920x1080).
-        # State: checkout scrolled to the VERY BOTTOM, save-info still checked,
-        # form free of inline error lines. An extra error line under the card
-        # row pushes every following row down ~25 px, so never calibrate from a
-        # screenshot that shows one.
-        "email": (1118, 128),
-        "card_number": (1137, 302),
-        "card_expiry": (1135, 340),
-        "card_cvc": (1266, 338),
-        "card_name": (1128, 415),
-        # Checkbox of "Save my information with Link…" (uncheck it)
-        "save_toggle": (1054, 568),
-        # Subscribe AFTER uncheck reflow — never scroll between toggle and Pay
-        "pay": (1222, 784),
-    },
+    # No Stripe coordinates live here on purpose. The checkout moves with the
+    # proxy's country — a ZIP row appears, labels change length, error lines push
+    # rows down — so its fields are read off the screen at run time instead
+    # (see stripe_vision.py).
     "continue_candidates": list(CONTINUE_WITHOUT_CANDIDATES),
     "stripe_url": "https://buy.stripe.com/fZu7sL6GT8mkdu037idnW03",
 }
@@ -160,7 +152,7 @@ APP_LAUNCH_WAIT = (3.0, 5.0)
 
 # Fixed delays from the approved workflow spec
 DELAY_STEP = 3.0          # after New profile / New Proxy / input / refresh
-DELAY_AFTER_CONTINUE = 15.0
+DELAY_AFTER_CONTINUE = 30.0
 DELAY_STRIPE_LOAD = 30.0
 DELAY_BETWEEN_CARD_FIELDS = 3.0
 DELAY_AFTER_STRIPE_SCROLL = 3.0  # after scroll-to-bottom, before Email click
@@ -168,8 +160,6 @@ DELAY_AFTER_PAY = 60.0           # wait after Pay for payment processing
 # After Play: wait for proxy to enable (Continue modal AND/OR proxy browser).
 # If neither appears → proxy inactive → skip Stripe and start next workflow.
 CONTINUE_MODAL_APPEAR_TIMEOUT = 12.0
-
-STRIPE_COORDS: Dict[str, Tuple[int, int]] = dict(STATE_A["stripe"])  # type: ignore[arg-type]
 
 EMAIL_FILE = SCRIPT_DIR / "email.txt"
 DEFAULT_EMAIL = "trioleo2947@outlook.com"
@@ -779,13 +769,12 @@ def set_layout(name: str) -> None:
 
 
 def restore_state_a(reason: str = "") -> None:
-    """Revert coordinates / URL / Stripe map to frozen STATE A."""
-    global STRIPE_COORDS, STRIPE_CHECKOUT_URL, CONTINUE_WITHOUT_CANDIDATES
+    """Revert BlackBird coordinates / URL to frozen STATE A."""
+    global STRIPE_CHECKOUT_URL, CONTINUE_WITHOUT_CANDIDATES
     print(f"[INFO] Restoring STATE A{': ' + reason if reason else ''}")
     set_layout(str(STATE_A["layout"]))
     COORDS.clear()
     COORDS.update(STATE_A["coords"])  # type: ignore[arg-type]
-    STRIPE_COORDS = dict(STATE_A["stripe"])  # type: ignore[arg-type]
     CONTINUE_WITHOUT_CANDIDATES = list(STATE_A["continue_candidates"])  # type: ignore[arg-type]
     STRIPE_CHECKOUT_URL = str(STATE_A["stripe_url"])
     print("[INFO] STATE A restored")
@@ -2075,21 +2064,17 @@ def load_email(path: Path = EMAIL_FILE) -> str:
     return load_emails(path)[0]
 
 
-def click_stripe(key: str, label: str) -> bool:
+def click_point_once(x: int, y: int, label: str) -> bool:
     """
-    Exactly ONE stationary click on the calibrated rectangle centre.
+    Exactly ONE stationary click at (x, y).
 
     Move (button UP) → pause → down/up at the same point. No double-click,
-    no select-all, no drag.
+    no select-all, no drag: a drag paints a blue selection instead of placing
+    the caret, which is what used to send text into the wrong field.
     """
     if _BROWSER_FRONT_MODE:
         ensure_browser_covers_blackbird()
-    base = STRIPE_COORDS.get(key)
-    if base is None:
-        print(f"[ERROR] Missing Stripe coord: {key}")
-        return False
-    x, y = scale_point(*base)
-    print(f"[INFO] Stripe {label}: ONE centre click at ({x}, {y}) [calibrated {base}]")
+    print(f"[INFO] Stripe {label}: ONE click at ({x}, {y})")
     _release_modifier_keys()
     _release_mouse_buttons()
     human_move_to(x, y)
@@ -2108,10 +2093,120 @@ def click_stripe(key: str, label: str) -> bool:
     return True
 
 
-def fill_stripe_field(key: str, label: str, text: str, *, use_paste: bool = False) -> bool:
-    """One centre click, then type/paste. Never Cmd+A (that paints blue selection)."""
-    if not click_stripe(key, label):
-        return False
+# ---------------------------------------------------------------------------
+# Stripe checkout — fields located from the screen
+# ---------------------------------------------------------------------------
+
+class StripeLayout:
+    """A detected checkout, with its points already mapped to click space."""
+
+    def __init__(self, form: StripeForm, shot_size: Tuple[int, int]) -> None:
+        self.form = form
+        screen_w, screen_h = pyautogui.size()
+        shot_w, shot_h = shot_size
+        self.sx = screen_w / float(shot_w)
+        self.sy = screen_h / float(shot_h)
+
+    @property
+    def has_zip(self) -> bool:
+        return self.form.has_zip
+
+    @property
+    def toggle_checked(self) -> Optional[bool]:
+        return self.form.toggle_checked
+
+    def point(self, key: str) -> Optional[Tuple[int, int]]:
+        pt = self.form.points.get(key)
+        if pt is None:
+            return None
+        return int(round(pt[0] * self.sx)), int(round(pt[1] * self.sy))
+
+    def describe(self) -> str:
+        parts = []
+        for key in (
+            "email",
+            "card_number",
+            "card_expiry",
+            "card_cvc",
+            "card_name",
+            "zip",
+            "save_toggle",
+            "pay",
+        ):
+            pt = self.point(key)
+            if pt is not None:
+                parts.append(f"{key}={pt}")
+        return " ".join(parts)
+
+
+def grab_screen() -> Optional[np.ndarray]:
+    """Full-screen RGB capture, or None if the screenshot call fails."""
+    try:
+        return np.asarray(pyautogui.screenshot().convert("RGB"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Screen capture failed: {exc}")
+        return None
+
+
+def locate_stripe_form(
+    reason: str,
+    *,
+    attempts: int = 6,
+    pause: float = 1.5,
+    require: Tuple[str, ...] = (),
+) -> Optional[StripeLayout]:
+    """
+    Read the checkout off the screen, retrying while the page settles.
+
+    Retries matter because the form is re-read at several points in the flow and
+    the page reflows underneath us: unchecking save-info removes the phone row,
+    and a rejected value adds an error line that pushes every later row down.
+    """
+    for attempt in range(1, attempts + 1):
+        if _BROWSER_FRONT_MODE:
+            ensure_browser_covers_blackbird()
+        shot = grab_screen()
+        if shot is not None:
+            form = detect_stripe_form(shot)
+            if form is not None:
+                missing = form.missing(require) if require else []
+                if not missing:
+                    layout = StripeLayout(form, (shot.shape[1], shot.shape[0]))
+                    print(
+                        f"[INFO] Stripe form located ({reason}, attempt {attempt}): "
+                        f"{layout.describe()}"
+                    )
+                    print(
+                        f"[INFO] Stripe form: zip_field={form.has_zip} "
+                        f"save_toggle_checked={form.toggle_checked}"
+                    )
+                    for note in form.notes:
+                        print(f"[WARN] Stripe form note: {note}")
+                    return layout
+                print(
+                    f"[WARN] Stripe form incomplete ({reason}, attempt "
+                    f"{attempt}/{attempts}): missing {', '.join(missing)}"
+                )
+            else:
+                print(
+                    f"[WARN] Stripe form not recognised ({reason}, attempt "
+                    f"{attempt}/{attempts})"
+                )
+        if attempt < attempts:
+            time.sleep(pause)
+    print(f"[ERROR] Could not locate the Stripe form on screen ({reason})")
+    return None
+
+
+def fill_stripe_field_at(
+    point: Tuple[int, int],
+    label: str,
+    text: str,
+    *,
+    use_paste: bool = False,
+) -> bool:
+    """One click on the located input, then type/paste into it."""
+    click_point_once(point[0], point[1], label)
     time.sleep(0.35)
     print(f"[INFO] Stripe {label}: entering {text!r}")
     if use_paste:
@@ -2124,6 +2219,45 @@ def fill_stripe_field(key: str, label: str, text: str, *, use_paste: bool = Fals
     wait_seconds(DELAY_BETWEEN_CARD_FIELDS, f"interval after {label}")
     print(f"[INFO] Stripe {label}: done")
     return True
+
+
+def random_zip_code() -> str:
+    """A five-digit postal code for checkouts that ask for one."""
+    return f"{random.randint(10000, 99999)}"
+
+
+def uncheck_save_toggle(layout: StripeLayout) -> bool:
+    """
+    Leave the save-information box unticked.
+
+    An already-unticked box is left alone; clicking it would turn it back on and
+    bring the phone row with it.
+    """
+    if layout.toggle_checked is None:
+        print("[ERROR] Save-info checkbox state could not be read")
+        return False
+    if not layout.toggle_checked:
+        print("[INFO] Stripe save-info checkbox already unchecked — no click needed")
+        return True
+
+    point = layout.point("save_toggle")
+    if point is None:
+        print("[ERROR] Save-info checkbox is checked but has no click point")
+        return False
+
+    for attempt in range(1, 4):
+        click_point_once(point[0], point[1], f"Save-info checkbox (uncheck, try {attempt})")
+        wait_seconds(2.0, "page reflow after toggling save-info")
+        current = locate_stripe_form("verify save-info unchecked", attempts=3, pause=1.0)
+        if current is None:
+            print("[WARN] Could not re-read the form after unchecking save-info")
+            return False
+        if current.toggle_checked is False:
+            print("[INFO] Stripe save-info checkbox is now unchecked")
+            return True
+        point = current.point("save_toggle") or point
+        print(f"[WARN] Save-info checkbox still checked after attempt {attempt}")
+    return False
 
 
 def scroll_browser_to_bottom() -> None:
@@ -2177,18 +2311,20 @@ def scroll_browser_to_bottom() -> None:
 
 def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     """
-    scroll (mouse frozen) → wait 3s → one click per field →
-    uncheck save-info → wait reflow → Subscribe → wait 60s
+    scroll (mouse frozen) → wait 3s → read the form off the screen →
+    one click per field, top to bottom → ZIP if the country asks for one →
+    leave save-info unchecked → Pay → wait 60s
+
+    Every click point comes from the current screenshot, so a longer country
+    name, a translated label or an extra error line moves the target with the
+    page instead of leaving the automation typing into the wrong box.
     """
     ensure_browser_covers_blackbird()
     demote_manager_windows(minimize=True)
 
-    global STRIPE_COORDS
-    STRIPE_COORDS = dict(STATE_A["stripe"])  # type: ignore[arg-type]
-
     print(
-        "[INFO] Stripe checkout: scroll → 3s settle → single-click fields → "
-        "UNCHECK save-toggle → Subscribe → wait 60s"
+        "[INFO] Stripe checkout: scroll → 3s settle → locate fields on screen → "
+        "fill every input → UNCHECK save-info → Pay → wait 60s"
     )
     print(f"[INFO] Card row: {card['raw']!r}")
     print(
@@ -2196,62 +2332,96 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
         f"expiry={card['expiry']!r} (MM={card.get('mm')!r} YY={card.get('yy')!r}) "
         f"cvc={card['cvc']!r} name={card['name']!r}"
     )
-    print(f"[INFO] Exact click targets: {STRIPE_COORDS}")
     if not email or "@" not in email:
         email = DEFAULT_EMAIL
     print(f"[INFO] Email to enter: {email!r}")
 
-    if not email or "@" not in email:
-        print("[ERROR] Missing checkout email")
-        return False
-
-    # Mouse must not move until first scroll finishes + 3s settle
+    # Mouse must not move until the scroll finishes and the page settles.
     _release_mouse_buttons()
     scroll_browser_to_bottom()
     wait_seconds(DELAY_AFTER_STRIPE_SCROLL, "settle after scroll (cursor still frozen)")
     ensure_browser_covers_blackbird()
     _release_mouse_buttons()
 
-    if not fill_stripe_field("email", "1 Email", email, use_paste=True):
+    layout = locate_stripe_form(
+        "before filling",
+        require=("email", "card_number", "card_expiry", "card_cvc", "card_name", "pay"),
+    )
+    if layout is None:
+        print("[ERROR] Stripe checkout aborted: the payment form was not found")
         return False
 
-    if not fill_stripe_field(
-        "card_number", "2 Card number", card["number"], use_paste=True
-    ):
-        return False
+    # Filled top to bottom, exactly as the form reads. The page is re-read
+    # before each field because a rejected value adds an inline error line that
+    # pushes every row below it down; reusing the first snapshot is how text
+    # ends up in the wrong box.
+    steps = [
+        ("email", "1 Email", email, True),
+        ("card_number", "2 Card number", card["number"], True),
+        ("card_expiry", "3 Expiry MM/YY", card["expiry"], False),
+        ("card_cvc", "4 CVC", card["cvc"], False),
+        ("card_name", "5 Cardholder name", card["name"], True),
+    ]
+    for key, label, value, use_paste in steps:
+        current = locate_stripe_form(f"before {label}", attempts=4, require=(key,))
+        if current is None:
+            print(f"[ERROR] Stripe {label}: the form could not be re-read")
+            return False
+        layout = current
+        point = layout.point(key)
+        if point is None:
+            print(f"[ERROR] Stripe {label}: no location for this field")
+            return False
+        if not fill_stripe_field_at(point, label, value, use_paste=use_paste):
+            return False
 
-    if not fill_stripe_field("card_expiry", "3 Expiry MM/YY", card["expiry"]):
-        return False
+    # Countries such as the United States add a postal-code row under the
+    # country select. It is required, so it must never be left blank.
+    if layout.has_zip:
+        current = locate_stripe_form("before 6 ZIP", attempts=4, require=("zip",))
+        zip_point = current.point("zip") if current else None
+        if zip_point is None:
+            print("[ERROR] Stripe ZIP: the postal-code row could not be re-read")
+            return False
+        if not fill_stripe_field_at(zip_point, "6 ZIP", random_zip_code()):
+            return False
+    else:
+        print("[INFO] Stripe ZIP: this country's form has no postal-code row")
 
-    if not fill_stripe_field("card_cvc", "4 CVC", card["cvc"]):
-        return False
-
-    if not fill_stripe_field(
-        "card_name", "5 Cardholder name", card["name"], use_paste=True
-    ):
-        return False
-
-    # No scrolling here. The page is already at the bottom and the five entries
-    # do not change its height, so the toggle sits exactly where it was
-    # calibrated. Re-scrolling would send End/PageDown/Down into the focused
-    # cardholder-name input and could move the caret or the country dropdown.
-    wait_seconds(1.5, "settle before save-toggle")
+    # Typing can add or clear inline error lines, which moves every later row,
+    # so the checkbox and the button are located again rather than reused.
+    wait_seconds(1.5, "settle before save-info checkbox")
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
     _release_mouse_buttons()
 
-    if not click_stripe("save_toggle", "6 Save-info checkbox (uncheck)"):
+    toggle_layout = locate_stripe_form(
+        "before save-info checkbox", require=("save_toggle", "pay")
+    )
+    if toggle_layout is None:
+        print(
+            "[ERROR] Stripe checkout aborted: the save-info checkbox could not be "
+            "read, so it cannot be guaranteed unchecked"
+        )
+        return False
+    if not uncheck_save_toggle(toggle_layout):
+        print("[ERROR] Stripe checkout aborted: could not uncheck save-info")
         return False
 
-    # Uncheck removes the phone row; Subscribe moves to its calibrated spot.
-    # No scrolling between toggle and Subscribe.
-    wait_seconds(2.0, "page reflow after unchecking save-info")
+    final = locate_stripe_form("before Pay", require=("pay",))
+    if final is None:
+        print("[ERROR] Stripe checkout aborted: Pay button not found after reflow")
+        return False
+    pay_point = final.point("pay")
+    if pay_point is None:
+        print("[ERROR] Stripe Pay: no location for the button")
+        return False
+
     ensure_browser_covers_blackbird()
     _release_modifier_keys()
     _release_mouse_buttons()
     time.sleep(0.25)
-    if not click_stripe("pay", "7 Pay button"):
-        return False
+    click_point_once(pay_point[0], pay_point[1], "7 Pay button")
     print("[INFO] Pay clicked — waiting 60s for payment processing...")
     wait_seconds(DELAY_AFTER_PAY, "payment processing after Pay")
     print("[INFO] Payment wait complete")
@@ -2661,7 +2831,7 @@ def run_one_workflow(
     # Play → wait buffer → search bar. Continue without is no longer shown.
     begin_browser_front_mode()
     wait_seconds_keep_browser_front(
-        DELAY_AFTER_CONTINUE, "after Play (15s buffer before search bar)"
+        DELAY_AFTER_CONTINUE, "after Play (30s buffer before search bar)"
     )
 
     if not enter_url_in_address_bar(checkout_url):

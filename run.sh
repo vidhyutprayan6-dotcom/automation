@@ -14,7 +14,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for f in main.py requirements.txt data.txt card.txt email.txt; do
+for f in main.py stripe_vision.py requirements.txt data.txt card.txt email.txt; do
   if [[ ! -f "$f" ]]; then
     echo "ERROR: missing $f"
     exit 1
@@ -34,7 +34,7 @@ fi
 echo "Installing dependencies..."
 .venv/bin/python -m pip install --upgrade pip setuptools wheel >/dev/null
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -c "import cv2, pyautogui, numpy, pyperclip, Quartz; print('Ready.')"
+.venv/bin/python -c "import cv2, pyautogui, numpy, pyperclip, Quartz, stripe_vision; print('Ready.')"
 
 echo "Starting in 3 seconds — leave BlackBird visible."
 sleep 1; echo "2..."; sleep 1; echo "1..."; sleep 1
