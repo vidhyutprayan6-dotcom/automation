@@ -289,6 +289,7 @@ def _format_run_summary(data: dict) -> str:
         f"⚠️ Card/Stripe failed: {stripe_failed}\n"
         f"🔧 Setup failed: {setup_failed}\n\n"
         "👀 BlackBird and all proxy browsers remain running for review.\n"
+        "🪟 All proxy-browser windows were minimized; BlackBird is active.\n"
         "✅ Only the automation process has closed."
     )
 

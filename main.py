@@ -1029,6 +1029,59 @@ def restore_manager_windows() -> None:
     print(f"[INFO] Manager unminimized → {(out.stdout or '').strip() or 'none'}")
 
 
+def minimize_all_proxy_browsers_for_completion() -> None:
+    """
+    Normal batch completion only: keep every proxy browser process/session alive,
+    minimize all browser windows, and leave the BlackBird manager active.
+
+    This does not close a browser, stop a proxy, or alter the /stop behavior.
+    """
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "blackbird_off"
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        set minimizedCount to 0
+        repeat with w in browserWins
+          try
+            set value of attribute "AXMinimized" of w to true
+            set minimizedCount to minimizedCount + 1
+          end try
+        end repeat
+        repeat with w in managerWins
+          try
+            set value of attribute "AXMinimized" of w to false
+          end try
+        end repeat
+        set frontmost to true
+        repeat with w in managerWins
+          try
+            perform action "AXRaise" of w
+          end try
+          try
+            set value of attribute "AXMain" of w to true
+          end try
+        end repeat
+        return "browsers_minimized:" & minimizedCount & ";manager_active:" & (count of managerWins)
+      end tell
+    end tell
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    result = (out.stdout or "").strip()
+    error = (out.stderr or "").strip()
+    if result:
+        print(f"[INFO] Normal-completion window state → {result}")
+    elif error:
+        print(f"[WARN] Could not minimize completion browsers: {error[:200]}")
+    else:
+        print("[WARN] Could not confirm normal-completion window state")
+
+
 def raise_manager_to_front() -> None:
     """
     Bring the BlackBird MANAGER window to the front for the profile-setup phase.
@@ -2914,13 +2967,12 @@ def run_one_workflow(
         # New profile / Refresh / Play coordinate clicks.
         return_to_blackbird_manager(f"workflow {index}/{total} Pay done — next proxy")
     else:
-        # Final proxy: do NOT return to the manager. Natural completion must
-        # leave BlackBird and every proxy browser running for the client to
-        # inspect. Only Telegram /stop is allowed to quit BlackBird.
-        ensure_browser_covers_blackbird()
+        # Final proxy: keep BlackBird and every proxy browser running. The
+        # normal-completion block minimizes all browsers and activates the
+        # manager after the complete batch summary has been calculated.
         print(
             "[INFO] Final proxy complete — leaving BlackBird and all proxy "
-            "browsers running; automation process will exit normally"
+            "browsers running until normal-completion window cleanup"
         )
     print(f"[INFO] WORKFLOW {index}/{total} COMPLETE (paid)")
     return "paid"
@@ -3140,21 +3192,16 @@ def main() -> None:
     print(f"[INFO] Stripe/card failed: {counts['stripe_failed']}")
     print(f"[INFO] Setup failed: {counts['setup_failed']}")
     print("=" * 60)
-    # Normal completion owns only this automation process. Do not call any
-    # BlackBird/browser shutdown routine here: the client needs the completed
-    # proxy sessions left alive for inspection. If at least one proxy browser
-    # opened, leave it visible above the manager before this process exits.
-    if _PROXY_BROWSER_SEEN:
-        ensure_browser_covers_blackbird()
-        print(
-            "[INFO] Normal completion: proxy browsers remain running and visible; "
-            "BlackBird remains running. Only automation is closing."
-        )
-    else:
-        print(
-            "[INFO] Normal completion: BlackBird remains running. "
-            "Only automation is closing (no proxy browser opened this run)."
-        )
+    # Normal completion owns only this automation process. Keep BlackBird and
+    # every proxy session alive, but minimize every proxy-browser window and
+    # leave the BlackBird manager visible/active. This cleanup is deliberately
+    # not used by /stop or between workflows.
+    minimize_all_proxy_browsers_for_completion()
+    print(
+        "[INFO] Normal completion: all proxy browsers remain running but are "
+        "minimized; BlackBird manager remains running and active. "
+        "Only automation is closing."
+    )
     _write_run_results(outcome="completed", total=total, counts=counts)
     sys.exit(0)
 
