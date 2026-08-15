@@ -5,6 +5,7 @@ Pillow>=10.0.0
 pyperclip>=1.8.0
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0
+requests>=2.31.0
 # PyObjC — macOS only (needed for Quartz clicks / Accessibility)
 pyobjc-core>=10.0,<12; sys_platform == "darwin"
 pyobjc-framework-Cocoa>=10.0,<12; sys_platform == "darwin"
