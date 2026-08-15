@@ -8,6 +8,7 @@ Keyboard /stop                   → stop automation
 Keyboard /status                 → running / stopped
 Keyboard /card                   → enter cards, then /save → card.txt
 Keyboard /proxy                  → enter proxies, then /save → data.txt
+                                   (IP:Port:User:Pass auto-saved as User:Pass:IP:Port)
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ from telegram.ext import (
 from process_manager import ProcessManager
 
 # Shown in welcome so you can verify the Mac is running THIS file
-BOT_UI_VERSION = "v2026-08-15-shared-actions"
+BOT_UI_VERSION = "v2026-08-15-proxy-reorder"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CARD_FILE = PROJECT_DIR / "card.txt"
@@ -61,9 +62,9 @@ CARD_HEADER = (
     "# Length may differ from data.txt / email.txt — that is OK.\n"
 )
 PROXY_HEADER = (
-    "# One proxy per line (user:pass@host:port). Exact case preserved.\n"
+    "# One proxy per line (Username:Password:IP:Port). Exact case preserved.\n"
+    "# Paste IP:Port:Username:Password via Telegram — it is auto-converted on /save.\n"
     "# Workflow count = number of proxy lines (top → bottom). Always.\n"
-    "# Cards and emails cycle separately — lists do not need matching lengths.\n"
 )
 
 MESSAGES = {
@@ -138,10 +139,16 @@ MESSAGES = {
     ),
     "proxy_prompt": (
         "🌐 PROXY INPUT MODE\n\n"
-        "Send proxy lines (one per line):\n"
-        "user:pass@host:port\n\n"
+        "Send proxy lines (one per line).\n\n"
+        "Accepted paste format:\n"
+        "IP:Port:Username:Password\n"
         "Example:\n"
-        "9fb5:9fb5@34.130.34.81:42682\n\n"
+        "69.10.54.69:9648:rps56862:rps56862\n\n"
+        "On /save this is auto-converted and stored as:\n"
+        "Username:Password:IP:Port\n"
+        "Example:\n"
+        "rps56862:rps56862:69.10.54.69:9648\n\n"
+        "You may also paste the stored format directly.\n"
         "The newly saved rows REPLACE all previously stored proxies.\n"
         "Duplicates within the new rows are removed.\n"
         "Press /save to keep, or /cancel to return."
@@ -164,7 +171,9 @@ MESSAGES = {
     "proxy_saved": (
         "💾 PROXY REPLACEMENT DONE\n"
         "• Previous records removed: {previous}\n"
-        "• Total stored now: {total}"
+        "• Total stored now: {total}\n"
+        "• Auto-converted IP:Port:User:Pass → User:Pass:IP:Port: {converted}\n"
+        "• Stored format: Username:Password:IP:Port"
     ),
     "save_failed": "❌ Failed to save. Check VPS logs.",
     "card_invalid": (
@@ -173,7 +182,8 @@ MESSAGES = {
     ),
     "proxy_invalid": (
         "⚠️ No valid proxy lines found.\n"
-        "Format: user:pass@host:port"
+        "Paste: IP:Port:Username:Password\n"
+        "Or stored: Username:Password:IP:Port"
     ),
 }
 
@@ -450,13 +460,83 @@ def _filter_card_lines(lines: list[str]) -> list[str]:
     return _dedupe_preserve_order(valid)
 
 
+def _is_ipv4(value: str) -> bool:
+    parts = value.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+    except ValueError:
+        return False
+
+
+def _is_port(value: str) -> bool:
+    return value.isdigit() and 1 <= int(value) <= 65535
+
+
+def _looks_like_host(value: str) -> bool:
+    """IPv4 or hostname — must contain a dot and no spaces."""
+    return bool(value) and "." in value and not any(ch.isspace() for ch in value)
+
+
+def normalize_proxy_line(line: str) -> tuple[str | None, bool]:
+    """
+    Return (Username:Password:IP:Port, converted?).
+
+    Accepted inputs:
+      - IP:Port:Username:Password  → rewritten to Username:Password:IP:Port
+      - Username:Password:IP:Port  → kept as-is
+      - Username:Password@IP:Port  → rewritten to Username:Password:IP:Port (legacy)
+    """
+    cleaned = line.strip().strip("\ufeff")
+    if not cleaned or any(ch.isspace() for ch in cleaned):
+        return None, False
+
+    if "@" in cleaned:
+        creds, _, hostport = cleaned.rpartition("@")
+        host, _, port = hostport.rpartition(":")
+        if (
+            creds.count(":") == 1
+            and _looks_like_host(host)
+            and _is_port(port)
+        ):
+            return f"{creds}:{host}:{port}", True
+        return None, False
+
+    parts = cleaned.split(":")
+    if len(parts) != 4:
+        return None, False
+    left_a, left_b, right_a, right_b = parts
+    # Paste format from the client: IP:Port:Username:Password
+    if _is_ipv4(left_a) and _is_port(left_b) and right_a and right_b:
+        return f"{right_a}:{right_b}:{left_a}:{left_b}", True
+    # Stored / BlackBird input format: Username:Password:IP:Port
+    if _looks_like_host(right_a) and _is_port(right_b) and left_a and left_b:
+        return cleaned, False
+    return None, False
+
+
 def _filter_proxy_lines(lines: list[str]) -> list[str]:
+    """Normalize + dedupe proxy rows (count / read path)."""
+    normalized, _converted = _normalize_proxy_lines(lines)
+    return normalized
+
+
+def _normalize_proxy_lines(lines: list[str]) -> tuple[list[str], int]:
+    """
+    Normalize proxy rows to Username:Password:IP:Port.
+    Returns (deduped rows, how many input rows were reordered/converted).
+    """
     valid: list[str] = []
+    converted = 0
     for line in lines:
-        cleaned = line.strip()
-        if "@" in cleaned and cleaned.count(":") >= 2:
-            valid.append(cleaned)
-    return _dedupe_preserve_order(valid)
+        proxy, was_converted = normalize_proxy_line(line)
+        if proxy is None:
+            continue
+        if was_converted:
+            converted += 1
+        valid.append(proxy)
+    return _dedupe_preserve_order(valid), converted
 
 
 def _read_existing_data_lines(path: Path) -> list[str]:
@@ -711,7 +791,7 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 CARD_FILE,
             )
         else:
-            incoming = _filter_proxy_lines(buffer)
+            incoming, converted = _normalize_proxy_lines(buffer)
             if not incoming:
                 await update.message.reply_text(
                     MESSAGES["proxy_invalid"], reply_markup=save_keyboard()
@@ -722,19 +802,25 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _clear_edit_state(context)
             await update.message.reply_text(
                 MESSAGES["proxy_saved"].format(
-                    previous=previous, total=len(incoming)
+                    previous=previous,
+                    total=len(incoming),
+                    converted=converted,
                 ),
                 reply_markup=main_keyboard(),
             )
             await _notify_other_users(
                 context.application,
                 update,
-                f"replaced the stored proxy records ({previous} → {len(incoming)}). 🌐",
+                (
+                    f"replaced the stored proxy records ({previous} → {len(incoming)}; "
+                    f"{converted} auto-converted to Username:Password:IP:Port). 🌐"
+                ),
             )
             logger.info(
-                "Proxies replaced → previous=%s total=%s file=%s",
+                "Proxies replaced → previous=%s total=%s converted=%s file=%s",
                 previous,
                 len(incoming),
+                converted,
                 DATA_FILE,
             )
     except Exception as exc:  # noqa: BLE001

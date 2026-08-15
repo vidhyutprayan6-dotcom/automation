@@ -1,10 +1,10 @@
-# One proxy per line (user:pass@host:port). Exact case preserved.
+# One proxy per line (Username:Password:IP:Port). Exact case preserved.
+# Paste IP:Port:Username:Password via Telegram — it is auto-converted on /save.
 # Workflow count = number of proxy lines (top → bottom). Always.
-# Cards and emails cycle separately — lists do not need matching lengths.
-91b5:9fbsaM.173,152.68c58265
-9tbs:¥fboas>.204,141.18:43/14
-3fHS:9TOIG1.96,114,6,2282 55627
-2H4 TAPS3: ABATITT Spas.49.62.112:2537
-RARS TMNT: AAAXFAVN SIRF.49.62.117:7708
-RSTHTW.2: R2OG4 wet ed.49.62.112:1982 12H I
-91b5:0165g1603.172,05.144:33140
+9fb5:9fb5:34.173.152.65:58265
+9fb5:9fb5:35.204.141.18:43714
+9fb5:9fb5:156.114.6.225:55627
+2H4I3P5%3:AMATZTT:49.62.112:2537
+RARSTMNT:AAQKFAVH:49.62.112:7703
+X57HTW.3:R20G4W:49.62.112:19821026859
+9fb5:9fb5:163.172.65.144:33140

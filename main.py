@@ -1918,10 +1918,65 @@ def launch_blackbird() -> None:
 # Data loaders
 # ---------------------------------------------------------------------------
 
+def _is_ipv4(value: str) -> bool:
+    parts = value.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+    except ValueError:
+        return False
+
+
+def _is_port(value: str) -> bool:
+    return value.isdigit() and 1 <= int(value) <= 65535
+
+
+def _looks_like_host(value: str) -> bool:
+    """IPv4 or hostname — must contain a dot and no spaces."""
+    return bool(value) and "." in value and not any(ch.isspace() for ch in value)
+
+
+def normalize_proxy_line(line: str) -> Tuple[Optional[str], bool]:
+    """
+    Normalize one data.txt line to Username:Password:IP:Port for BlackBird.
+
+    Accepts:
+      - Username:Password:IP:Port (stored / typed format)
+      - IP:Port:Username:Password (paste format → converted)
+      - Username:Password@IP:Port (legacy → converted)
+    """
+    cleaned = line.strip().strip("\ufeff")
+    if not cleaned or any(ch.isspace() for ch in cleaned):
+        return None, False
+
+    if "@" in cleaned:
+        creds, _, hostport = cleaned.rpartition("@")
+        host, _, port = hostport.rpartition(":")
+        if (
+            creds.count(":") == 1
+            and _looks_like_host(host)
+            and _is_port(port)
+        ):
+            return f"{creds}:{host}:{port}", True
+        return None, False
+
+    parts = cleaned.split(":")
+    if len(parts) != 4:
+        return None, False
+    a, b, c, d = parts
+    if _is_ipv4(a) and _is_port(b) and c and d:
+        return f"{c}:{d}:{a}:{b}", True
+    if _looks_like_host(c) and _is_port(d) and a and b:
+        return cleaned, False
+    return None, False
+
+
 def load_proxies(path: Path) -> List[str]:
     """
     Read data.txt top → bottom, one proxy per non-empty line (order preserved).
     Workflow count MUST equal len(returned list).
+    Stored / typed format: Username:Password:IP:Port
     """
     if not path.is_file():
         raise FileNotFoundError(f"data file not found: {path}")
@@ -1932,13 +1987,20 @@ def load_proxies(path: Path) -> List[str]:
         line = raw.strip().strip("\ufeff")
         if not line or line.startswith("#"):
             continue
-        if "@" in line and line.count(":") >= 2:
-            proxies.append(line)
+        proxy, converted = normalize_proxy_line(line)
+        if proxy is None:
+            print(f"[WARN] Skipping non-proxy line {file_line_no}: {line[:64]!r}")
+            continue
+        proxies.append(proxy)
+        if converted and proxy != line:
             print(
-                f"[INFO] data.txt line {file_line_no} → proxy[{len(proxies)}]: {line!r}"
+                f"[INFO] data.txt line {file_line_no} → proxy[{len(proxies)}]: "
+                f"{proxy!r} (normalized from {line!r})"
             )
         else:
-            print(f"[WARN] Skipping non-proxy line {file_line_no}: {line[:48]!r}")
+            print(
+                f"[INFO] data.txt line {file_line_no} → proxy[{len(proxies)}]: {proxy!r}"
+            )
     print(f"[INFO] data.txt loaded: {len(proxies)} proxy line(s) = {len(proxies)} workflow(s)")
     return proxies
 
