@@ -1089,10 +1089,10 @@ def raise_manager_to_front() -> None:
     Manager buttons (New profile / New Proxy / Create / Refresh / Play) are
     clicked by coordinate, so the manager must sit on top for those clicks to
     land. This is only ever called BEFORE the current proxy's browser exists
-    (i.e. between finishing one proxy and creating the next). Browsers from
-    previous proxies are never closed — they simply rest behind the manager
-    during setup. Once Play opens the new browser and the Continue modal is
-    handled, begin_browser_front_mode() puts the proxy browser back on top.
+    (i.e. between finishing one proxy and creating the next). A prior successful
+    browser is closed after its payment wait; this function still handles
+    failure paths where a browser may remain. Once Play opens the new browser,
+    begin_browser_front_mode() puts that proxy browser on top.
     """
     script = f"""
     tell application "System Events"
@@ -2759,15 +2759,171 @@ def click_new_proxy() -> bool:
     )
 
 
-def close_profile_browsers() -> None:
+def _close_one_proxy_browser_ax() -> str:
+    """Try native Accessibility close actions on one proxy-browser window."""
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "blackbird_off"
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        if (count of browserWins) = 0 then return "no_browser"
+        set w to item 1 of browserWins
+        repeat with mw in managerWins
+          try
+            set value of attribute "AXMain" of mw to false
+          end try
+        end repeat
+        try
+          set value of attribute "AXMinimized" of w to false
+        end try
+        try
+          perform action "AXRaise" of w
+        end try
+        try
+          set value of attribute "AXMain" of w to true
+        end try
+        try
+          set focused of w to true
+        end try
+        set frontmost to true
+        delay 0.2
+
+        try
+          set cb to first button of w whose subrole is "AXCloseButton"
+          perform action "AXPress" of cb
+          return "AXPress close button"
+        end try
+        try
+          set cb to first button of w whose description is "close button"
+          click cb
+          return "click close button"
+        end try
+        try
+          perform action "AXClose" of w
+          return "AXClose window"
+        end try
+        return "AX close unavailable"
+      end tell
+    end tell
     """
-    INTENTIONALLY A NO-OP.
-    Proxy browsers must NEVER be closed/turned off after Pay or between workflows.
-    """
-    print("[INFO] Skipping browser close — proxy browsers stay open (required)")
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (out.stdout or "").strip() or (out.stderr or "").strip() or "no result"
 
 
-def close_current_proxy_browser() -> None:
+def _proxy_browser_close_point() -> Optional[Tuple[int, int]]:
+    """
+    Raise one proxy browser and return its close-button center.
+
+    Prefer the live AX close-button rectangle. For custom Chromium chrome, fall
+    back to the indicated top-left control: approximately 14 px right and 9 px
+    below the browser window's top-left corner.
+    """
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return ""
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        if (count of browserWins) = 0 then return ""
+        set w to item 1 of browserWins
+        repeat with mw in managerWins
+          try
+            set value of attribute "AXMain" of mw to false
+          end try
+        end repeat
+        try
+          set value of attribute "AXMinimized" of w to false
+        end try
+        try
+          perform action "AXRaise" of w
+        end try
+        try
+          set value of attribute "AXMain" of w to true
+        end try
+        try
+          set focused of w to true
+        end try
+        set frontmost to true
+        delay 0.25
+
+        try
+          set cb to first button of w whose subrole is "AXCloseButton"
+          set bp to position of cb
+          set bs to size of cb
+          set cx to (item 1 of bp) + ((item 1 of bs) / 2)
+          set cy to (item 2 of bp) + ((item 2 of bs) / 2)
+          return (cx as integer as text) & "," & (cy as integer as text)
+        end try
+
+        set wp to position of w
+        return (((item 1 of wp) + 14) as integer as text) & "," & ¬
+          (((item 2 of wp) + 9) as integer as text)
+      end tell
+    end tell
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    text = (out.stdout or "").strip()
+    if text.count(",") != 1:
+        return None
+    try:
+        x, y = (int(float(value)) for value in text.split(","))
+        return x, y
+    except ValueError:
+        return None
+
+
+def _close_one_proxy_browser_cmd_w() -> str:
+    """Raise one verified proxy browser and send macOS Close Window."""
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "blackbird_off"
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        if (count of browserWins) = 0 then return "no_browser"
+        set w to item 1 of browserWins
+        repeat with mw in managerWins
+          try
+            set value of attribute "AXMain" of mw to false
+          end try
+        end repeat
+        try
+          set value of attribute "AXMinimized" of w to false
+        end try
+        try
+          perform action "AXRaise" of w
+        end try
+        try
+          set value of attribute "AXMain" of w to true
+        end try
+        try
+          set focused of w to true
+        end try
+        set frontmost to true
+        delay 0.25
+        keystroke "w" using {{command down}}
+        return "Cmd+W"
+      end tell
+    end tell
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (out.stdout or "").strip() or (out.stderr or "").strip() or "no result"
+
+
+def close_current_proxy_browser() -> bool:
     """
     Close the proxy-browser window(s) after the post-Pay wait.
 
@@ -2780,60 +2936,83 @@ def close_current_proxy_browser() -> None:
     """
     if not is_blackbird_running():
         print("[INFO] BlackBird is off — no proxy browser to close")
-        return
-    before = count_proxy_browser_windows()
-    if before <= 0:
+        return True
+    initial = count_proxy_browser_windows()
+    if initial <= 0:
         print("[INFO] No proxy browser window open — nothing to close")
-        return
-    script = f"""
-    tell application "System Events"
-      if not (exists process "BlackBird") then return "blackbird_off"
-      tell process "BlackBird"
-{_AX_CLASSIFY_WINDOWS}
-        set closedCount to 0
-        repeat with w in browserWins
-          set didClose to false
-          try
-            set cb to (first button of w whose subrole is "AXCloseButton")
-            perform action "AXPress" of cb
-            set didClose to true
-          end try
-          if not didClose then
-            try
-              perform action "AXRaise" of w
-              set frontmost to true
-              delay 0.2
-              keystroke "w" using {{command down}}
-              set didClose to true
-            end try
-          end if
-          if didClose then set closedCount to closedCount + 1
-          delay 0.3
-        end repeat
-        return "closed:" & closedCount
-      end tell
-    end tell
-    """
-    out = subprocess.run(
-        ["osascript", "-e", script],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    result = (out.stdout or "").strip()
-    error = (out.stderr or "").strip()
-    time.sleep(0.6)
-    after = count_proxy_browser_windows()
-    if result:
-        print(f"[INFO] Proxy browser close → {result} (windows {before} → {after})")
-    elif error:
-        print(f"[WARN] Proxy browser close error: {error[:200]}")
-    if after >= before:
+        return True
+
+    print(f"[INFO] Closing all proxy browsers after payment wait: {initial} open")
+    # Normally one browser exists. The larger bound also clears leftovers from a
+    # prior failed close without risking an unbounded loop.
+    max_rounds = initial + 3
+    for round_no in range(1, max_rounds + 1):
+        before = count_proxy_browser_windows()
+        if before <= 0:
+            _release_modifier_keys()
+            print("[INFO] Proxy browser close VERIFIED: 0 browser windows remain")
+            return True
+
+        ax_result = _close_one_proxy_browser_ax()
+        time.sleep(0.7)
+        after_ax = count_proxy_browser_windows()
         print(
-            "[WARN] Proxy browser window count did not drop after close attempt "
-            f"({before} → {after}); continuing anyway"
+            f"[INFO] Browser close round {round_no}: AX={ax_result!r}; "
+            f"windows {before} → {after_ax}"
         )
+        if after_ax < before:
+            continue
+
+        close_point = _proxy_browser_close_point()
+        if close_point is not None:
+            print(
+                "[INFO] AX close did not work — physically clicking browser "
+                f"close control at {close_point}"
+            )
+            _release_modifier_keys()
+            _release_mouse_buttons()
+            fast_click_at(close_point[0], close_point[1])
+            time.sleep(0.9)
+        after_click = count_proxy_browser_windows()
+        print(f"[INFO] Browser close coordinate check: {after_ax} → {after_click}")
+        if after_click < after_ax:
+            continue
+
+        cmd_result = _close_one_proxy_browser_cmd_w()
+        time.sleep(0.9)
+        after_cmd = count_proxy_browser_windows()
+        print(
+            f"[INFO] Browser close keyboard fallback={cmd_result!r}; "
+            f"windows {after_click} → {after_cmd}"
+        )
+        if after_cmd < after_click:
+            continue
+
+        # The screenshot's custom close control is at screen (14, 30) when the
+        # browser starts at (0, 21). If AX omitted the true window frame, retry
+        # both common title-bar offsets around the live top-left corner.
+        frame = get_proxy_browser_frame()
+        if frame is not None:
+            x, y, _width, _height = frame
+            for offset_y in (9, 14):
+                point = (x + 14, y + offset_y)
+                print(f"[INFO] Browser close hard coordinate retry at {point}")
+                _release_mouse_buttons()
+                fast_click_at(point[0], point[1])
+                time.sleep(0.7)
+                if count_proxy_browser_windows() < after_cmd:
+                    break
+
+    remaining = count_proxy_browser_windows()
     _release_modifier_keys()
+    if remaining <= 0:
+        print("[INFO] Proxy browser close VERIFIED: 0 browser windows remain")
+        return True
+    print(
+        "[ERROR] Proxy browser close FAILED after AX, physical click, and Cmd+W; "
+        f"{remaining} browser window(s) still open"
+    )
+    return False
 
 
 def dismiss_open_sheets() -> None:
@@ -2863,9 +3042,9 @@ def return_to_blackbird_manager(reason: str = "") -> None:
     ensure_network_warning_dismissed()
     detect_and_apply_layout()
     restore_manager_windows()
-    # Setup phase for the NEXT proxy begins here. The current proxy's browser is
-    # finished (kept open, never closed) and would otherwise cover the manager,
-    # so bring the manager to the front — its buttons are clicked by coordinate.
+    # Setup phase for the NEXT proxy begins here. Successful payment paths close
+    # their browser first; failure paths can still leave one open, so bring the
+    # manager to the front for its coordinate-driven controls.
     raise_manager_to_front()
     _release_modifier_keys()
     time.sleep(0.3)
@@ -2884,7 +3063,7 @@ def create_profile_with_proxy(proxy: str) -> bool:
     dismiss_open_sheets()
     restore_manager_windows()
     # Manager must be on top so New profile / New Proxy / Create clicks land on
-    # it and not on a previous proxy's browser (browsers are kept open).
+    # it, including after a failure path left a proxy browser open.
     raise_manager_to_front()
     time.sleep(0.2)
 
@@ -2943,7 +3122,7 @@ def refresh_and_play() -> Tuple[bool, int]:
     detect_and_apply_layout()
     time.sleep(0.3)
     # Refresh and Play are manager buttons clicked by coordinate — keep the
-    # manager on top of any previous proxy browser (which stays open).
+    # manager on top, including if a failure path left a browser open.
     raise_manager_to_front()
     if not click_target("open_profile", "Refresh (proxy icon)", activate_app=False):
         return False, 0
@@ -3034,7 +3213,11 @@ def run_one_workflow(
     # Card connection succeeded and the ~60s payment wait already elapsed inside
     # fill_stripe_checkout. Per updated spec, close this proxy's browser now so
     # an inactive proxy's original browser cannot re-open the card connection.
-    close_current_proxy_browser()
+    if not close_current_proxy_browser():
+        raise RuntimeError(
+            f"Workflow {index}/{total}: proxy browser could not be closed; "
+            "refusing to start the next proxy while the previous browser is open"
+        )
 
     if index < total:
         # More proxies remain: the next workflow needs the manager in front for
