@@ -2767,6 +2767,75 @@ def close_profile_browsers() -> None:
     print("[INFO] Skipping browser close — proxy browsers stay open (required)")
 
 
+def close_current_proxy_browser() -> None:
+    """
+    Close the proxy-browser window(s) after the post-Pay wait.
+
+    Called once per workflow, only after the card connection succeeded and the
+    ~60s payment wait has elapsed. It closes the proxy browser window(s) but
+    never quits BlackBird and never touches the manager window, so the manager
+    stays alive for the next proxy (and for /stop to control). Earlier proxies
+    were already closed in their own iteration, so normally only the current
+    proxy's browser is open at this point.
+    """
+    if not is_blackbird_running():
+        print("[INFO] BlackBird is off — no proxy browser to close")
+        return
+    before = count_proxy_browser_windows()
+    if before <= 0:
+        print("[INFO] No proxy browser window open — nothing to close")
+        return
+    script = f"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "blackbird_off"
+      tell process "BlackBird"
+{_AX_CLASSIFY_WINDOWS}
+        set closedCount to 0
+        repeat with w in browserWins
+          set didClose to false
+          try
+            set cb to (first button of w whose subrole is "AXCloseButton")
+            perform action "AXPress" of cb
+            set didClose to true
+          end try
+          if not didClose then
+            try
+              perform action "AXRaise" of w
+              set frontmost to true
+              delay 0.2
+              keystroke "w" using {{command down}}
+              set didClose to true
+            end try
+          end if
+          if didClose then set closedCount to closedCount + 1
+          delay 0.3
+        end repeat
+        return "closed:" & closedCount
+      end tell
+    end tell
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    result = (out.stdout or "").strip()
+    error = (out.stderr or "").strip()
+    time.sleep(0.6)
+    after = count_proxy_browser_windows()
+    if result:
+        print(f"[INFO] Proxy browser close → {result} (windows {before} → {after})")
+    elif error:
+        print(f"[WARN] Proxy browser close error: {error[:200]}")
+    if after >= before:
+        print(
+            "[WARN] Proxy browser window count did not drop after close attempt "
+            f"({before} → {after}); continuing anyway"
+        )
+    _release_modifier_keys()
+
+
 def dismiss_open_sheets() -> None:
     """Press Escape to close stray New profile / dialog sheets (not browsers)."""
     _release_modifier_keys()
@@ -2962,17 +3031,22 @@ def run_one_workflow(
         return_to_blackbird_manager(f"workflow {index} Stripe/Pay failed")
         return "stripe_failed"
 
+    # Card connection succeeded and the ~60s payment wait already elapsed inside
+    # fill_stripe_checkout. Per updated spec, close this proxy's browser now so
+    # an inactive proxy's original browser cannot re-open the card connection.
+    close_current_proxy_browser()
+
     if index < total:
         # More proxies remain: the next workflow needs the manager in front for
         # New profile / Refresh / Play coordinate clicks.
         return_to_blackbird_manager(f"workflow {index}/{total} Pay done — next proxy")
     else:
-        # Final proxy: keep BlackBird and every proxy browser running. The
-        # normal-completion block minimizes all browsers and activates the
-        # manager after the complete batch summary has been calculated.
+        # Final proxy: the browser has been closed above. Keep BlackBird itself
+        # running (only /stop may quit it); the normal-completion block just
+        # re-activates the manager after the batch summary is calculated.
         print(
-            "[INFO] Final proxy complete — leaving BlackBird and all proxy "
-            "browsers running until normal-completion window cleanup"
+            "[INFO] Final proxy complete — proxy browser closed; BlackBird "
+            "manager stays running until normal-completion window cleanup"
         )
     print(f"[INFO] WORKFLOW {index}/{total} COMPLETE (paid)")
     return "paid"
@@ -3192,14 +3266,14 @@ def main() -> None:
     print(f"[INFO] Stripe/card failed: {counts['stripe_failed']}")
     print(f"[INFO] Setup failed: {counts['setup_failed']}")
     print("=" * 60)
-    # Normal completion owns only this automation process. Keep BlackBird and
-    # every proxy session alive, but minimize every proxy-browser window and
-    # leave the BlackBird manager visible/active. This cleanup is deliberately
-    # not used by /stop or between workflows.
+    # Normal completion owns only this automation process. Each proxy browser
+    # was closed right after its own payment wait, so this step just re-activates
+    # the BlackBird manager (and minimizes any stray browser window as a safety
+    # net). It is deliberately not used by /stop or between workflows.
     minimize_all_proxy_browsers_for_completion()
     print(
-        "[INFO] Normal completion: all proxy browsers remain running but are "
-        "minimized; BlackBird manager remains running and active. "
+        "[INFO] Normal completion: proxy browsers were closed after each "
+        "payment; BlackBird manager remains running and active. "
         "Only automation is closing."
     )
     _write_run_results(outcome="completed", total=total, counts=counts)

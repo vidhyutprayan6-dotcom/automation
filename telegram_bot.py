@@ -288,8 +288,8 @@ def _format_run_summary(data: dict) -> str:
         f"⏭ Inactive (skipped): {inactive}\n"
         f"⚠️ Card/Stripe failed: {stripe_failed}\n"
         f"🔧 Setup failed: {setup_failed}\n\n"
-        "👀 BlackBird and all proxy browsers remain running for review.\n"
-        "🪟 All proxy-browser windows were minimized; BlackBird is active.\n"
+        "🪟 Each proxy browser was closed after its ~1 min payment wait.\n"
+        "👀 BlackBird remains running and active for review.\n"
         "✅ Only the automation process has closed."
     )
 
@@ -346,8 +346,8 @@ async def _watch_job_until_done(app: Application) -> None:
             elif code in (0, None):
                 text = (
                     "🎉 TASK COMPLETED\n"
-                    "The batch finished. Only automation closed; BlackBird and "
-                    "all proxy browsers remain running for review.\n"
+                    "The batch finished. Each proxy browser was closed after its "
+                    "~1 min payment wait; BlackBird remains running for review.\n"
                     "Open /status for details if available."
                 )
             else:
