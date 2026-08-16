@@ -3078,6 +3078,101 @@ def return_to_blackbird_manager(reason: str = "") -> None:
     print("[INFO] Ready for next proxy — manager on top for New profile clicks")
 
 
+def profile_editor_open() -> bool:
+    """
+    True if the New profile editing sheet is currently on screen.
+
+    The editor is confirmed by any of its own controls — Create profile, the
+    New Proxy connection segment, or Add tag — searched through the whole
+    Electron AX tree (entire contents), so a nested button still counts.
+    """
+    if not is_blackbird_running():
+        return False
+    script = r"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "no"
+      tell process "BlackBird"
+        repeat with w in windows
+          try
+            set elems to entire contents of w
+            repeat with el in elems
+              try
+                set ename to name of el as text
+                if ename contains "Create profile" or ename contains "Create Profile" ¬
+                  or ename contains "New Proxy" or ename contains "New proxy" ¬
+                  or ename contains "Add tag" or ename contains "Add Tag" then
+                  return "yes"
+                end if
+              end try
+            end repeat
+          end try
+        end repeat
+      end tell
+    end tell
+    return "no"
+    """
+    out = subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (out.stdout or "").strip().lower() == "yes"
+
+
+def open_new_profile_editor(max_attempts: int = 6) -> bool:
+    """
+    Click New profile and CONFIRM the profile-editing sheet actually opened
+    before the caller proceeds to New Proxy.
+
+    A system modal (BlackBird Network / Continue without) can appear at any time
+    and cover the New profile button, so every attempt first clears the modal,
+    re-raises the manager, then clicks. After each click the editor is polled
+    for a few seconds; a click that did not register is simply retried. Only an
+    open editor returns True.
+    """
+    for attempt in range(1, max_attempts + 1):
+        # The modal is unpredictable — always clear it right before the click.
+        dismiss_network_warning()
+        ensure_network_warning_dismissed()
+        restore_manager_windows()
+        raise_manager_to_front()
+        time.sleep(0.2)
+
+        if profile_editor_open():
+            print(f"[INFO] Profile editor already open (attempt {attempt})")
+            return True
+
+        print(f"[INFO] New profile click attempt {attempt}/{max_attempts}")
+        clicked = click_named_or_coord(
+            "new_profile",
+            "New profile",
+            ["+ New profile", "+ New Profile"],
+            activate_app=False,
+        )
+        if not clicked:
+            print("[WARN] New profile click did not land — will re-check and retry")
+
+        # Poll for the editor; a modal may have intercepted this click.
+        for _ in range(6):
+            time.sleep(0.5)
+            if network_warning_visible():
+                print("[INFO] Modal appeared over New profile — dismissing, will retry")
+                ensure_network_warning_dismissed()
+                break
+            if profile_editor_open():
+                print(f"[INFO] Profile editor CONFIRMED open after attempt {attempt}")
+                return True
+
+    still_open = profile_editor_open()
+    if not still_open:
+        print(
+            "[ERROR] New profile editor did not open after "
+            f"{max_attempts} attempts (button may stay blocked by a modal)"
+        )
+    return still_open
+
+
 def create_profile_with_proxy(proxy: str) -> bool:
     """
     New profile → 3s → New Proxy → 3s → type proxy (exact) → 3s → Create.
@@ -3098,14 +3193,11 @@ def create_profile_with_proxy(proxy: str) -> bool:
         print("[ERROR] Network modal blocks workflow — will not click New profile")
         return False
 
-    if not click_named_or_coord(
-        "new_profile",
-        "New profile",
-        ["+ New profile", "+ New Profile"],
-        activate_app=False,
-    ):
+    # Click New profile and VERIFY the editor opened. Retries through any system
+    # modal that covers the button, and re-clicks if a click did not register.
+    if not open_new_profile_editor():
         return False
-    wait_seconds(DELAY_STEP, "after New profile")
+    wait_seconds(DELAY_STEP, "after New profile (editor confirmed)")
 
     if not click_new_proxy():
         return False
