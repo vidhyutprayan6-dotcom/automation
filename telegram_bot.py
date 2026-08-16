@@ -69,121 +69,121 @@ PROXY_HEADER = (
 
 MESSAGES = {
     "welcome": (
-        f"📋 MENU  BlackBird Automation ({BOT_UI_VERSION})\n\n"
-        "Connected. Five buttons below:\n"
-        "• /status — current job status\n"
-        "• /start — start automation\n"
-        "• /stop — stop automation + BlackBird\n"
-        "• /card — replace cards (shows stored count)\n"
-        "• /proxy — replace proxies (shows stored count)"
+        f"📋 МЕНЮ  BlackBird Automation ({BOT_UI_VERSION})\n\n"
+        "Подключено. Пять кнопок ниже:\n"
+        "• /status — текущий статус задачи\n"
+        "• /start — запустить автоматизацию\n"
+        "• /stop — остановить автоматизацию + BlackBird\n"
+        "• /card — заменить карты (показывает сохранённое количество)\n"
+        "• /proxy — заменить прокси (показывает сохранённое количество)"
     ),
     "started": (
-        "▶️ START: job is RUNNING now.\n"
-        "Other connected users have been notified.\n"
-        "You will receive a 🎉 completion message when it finishes by itself."
+        "▶️ СТАРТ: задача СЕЙЧАС ВЫПОЛНЯЕТСЯ.\n"
+        "Другие подключённые пользователи уведомлены.\n"
+        "Вы получите сообщение 🎉 о завершении, когда она закончится сама."
     ),
     "already_running": (
-        "⚠️ START BLOCKED: a job is already RUNNING.\n"
-        "A second job was not started.\n"
-        "Use /status or /stop."
+        "⚠️ СТАРТ ЗАБЛОКИРОВАН: задача уже ВЫПОЛНЯЕТСЯ.\n"
+        "Вторая задача не запущена.\n"
+        "Используйте /status или /stop."
     ),
     "stopped": (
-        "🛑 STOP: you ended the job.\n"
-        "Automation process terminated.\n"
-        "BlackBird app closed.\n"
-        "Other connected users have been notified."
+        "🛑 СТОП: вы завершили задачу.\n"
+        "Процесс автоматизации остановлен.\n"
+        "Приложение BlackBird закрыто.\n"
+        "Другие подключённые пользователи уведомлены."
     ),
     "not_running": (
-        "💤 STOP: nothing was running.\n"
-        "Automation is idle. BlackBird is already off."
+        "💤 СТОП: ничего не выполнялось.\n"
+        "Автоматизация неактивна. BlackBird уже выключен."
     ),
     "running": (
-        "🟢 STATUS: RUNNING\n"
-        "Automation is in progress right now."
+        "🟢 СТАТУС: ВЫПОЛНЯЕТСЯ\n"
+        "Автоматизация сейчас в процессе."
     ),
     "idle": (
-        "⚪ STATUS: IDLE\n"
-        "No job is running.\n"
-        "Press /start to begin."
+        "⚪ СТАТУС: ОЖИДАНИЕ\n"
+        "Ни одна задача не выполняется.\n"
+        "Нажмите /start, чтобы начать."
     ),
     "finished_status": (
-        "🏁 STATUS: LAST JOB COMPLETED\n"
-        "The previous job finished by itself.\n"
-        "No job is running now."
+        "🏁 СТАТУС: ПОСЛЕДНЯЯ ЗАДАЧА ЗАВЕРШЕНА\n"
+        "Предыдущая задача завершилась сама.\n"
+        "Сейчас ни одна задача не выполняется."
     ),
     "failed_status": (
-        "🔴 STATUS: LAST JOB ENDED WITH AN ERROR\n"
-        "The previous job stopped unexpectedly.\n"
-        "No job is running now."
+        "🔴 СТАТУС: ПОСЛЕДНЯЯ ЗАДАЧА ЗАВЕРШИЛАСЬ С ОШИБКОЙ\n"
+        "Предыдущая задача неожиданно остановилась.\n"
+        "Сейчас ни одна задача не выполняется."
     ),
     "job_failed": (
-        "💥 UNEXPECTED ERROR\n"
-        "The task stopped before finishing all proxies.\n"
-        "Exit code: {code}\n"
-        "Check logs/automation.log on the VPS."
+        "💥 НЕОЖИДАННАЯ ОШИБКА\n"
+        "Задача остановилась до обработки всех прокси.\n"
+        "Код выхода: {code}\n"
+        "Проверьте logs/automation.log на VPS."
     ),
-    "start_failed": "❌ START FAILED.\nPlease check the VPS logs.",
-    "stop_failed": "❌ STOP FAILED.\nPlease check the VPS logs.",
-    "missing_config": "❌ Bot is not configured. Set TELEGRAM_BOT_TOKEN in .env",
-    "card_count": "📊 CARDS STORED NOW: {count} row(s) in card.txt",
-    "proxy_count": "📊 PROXIES STORED NOW: {count} row(s) in data.txt",
+    "start_failed": "❌ НЕ УДАЛОСЬ ЗАПУСТИТЬ.\nПроверьте логи на VPS.",
+    "stop_failed": "❌ НЕ УДАЛОСЬ ОСТАНОВИТЬ.\nПроверьте логи на VPS.",
+    "missing_config": "❌ Бот не настроен. Задайте TELEGRAM_BOT_TOKEN в .env",
+    "card_count": "📊 СЕЙЧАС СОХРАНЕНО КАРТ: {count} строк(и) в card.txt",
+    "proxy_count": "📊 СЕЙЧАС СОХРАНЕНО ПРОКСИ: {count} строк(и) в data.txt",
     "card_prompt": (
-        "💳 CARD INPUT MODE\n\n"
-        "Send card lines (one per line):\n"
+        "💳 РЕЖИМ ВВОДА КАРТ\n\n"
+        "Отправьте строки с картами (по одной в строке):\n"
         "number|MM|YY|CVC|Name\n\n"
-        "Example:\n"
+        "Пример:\n"
         "4426454034937026|03|28|978|Andrew Grant\n\n"
-        "The newly saved rows REPLACE all previously stored cards.\n"
-        "Duplicates within the new rows are removed.\n"
-        "Press /save to keep, or /cancel to return."
+        "Вновь сохранённые строки ЗАМЕНЯЮТ все ранее сохранённые карты.\n"
+        "Дубликаты среди новых строк удаляются.\n"
+        "Нажмите /save, чтобы сохранить, или /cancel, чтобы вернуться."
     ),
     "proxy_prompt": (
-        "🌐 PROXY INPUT MODE\n\n"
-        "Send proxy lines (one per line).\n\n"
-        "Accepted paste format:\n"
+        "🌐 РЕЖИМ ВВОДА ПРОКСИ\n\n"
+        "Отправьте строки с прокси (по одной в строке).\n\n"
+        "Принимаемый формат вставки:\n"
         "IP:Port:Username:Password\n"
-        "Example:\n"
+        "Пример:\n"
         "69.10.54.69:9648:rps56862:rps56862\n\n"
-        "On /save this is auto-converted and stored as:\n"
+        "При /save автоматически преобразуется и сохраняется как:\n"
         "Username:Password:IP:Port\n"
-        "Example:\n"
+        "Пример:\n"
         "rps56862:rps56862:69.10.54.69:9648\n\n"
-        "You may also paste the stored format directly.\n"
-        "The newly saved rows REPLACE all previously stored proxies.\n"
-        "Duplicates within the new rows are removed.\n"
-        "Press /save to keep, or /cancel to return."
+        "Также можно вставить сохранённый формат напрямую.\n"
+        "Вновь сохранённые строки ЗАМЕНЯЮТ все ранее сохранённые прокси.\n"
+        "Дубликаты среди новых строк удаляются.\n"
+        "Нажмите /save, чтобы сохранить, или /cancel, чтобы вернуться."
     ),
     "buffered": (
-        "📥 BUFFER: {count} new line(s) ready.\n"
-        "Press /save to keep, or /cancel to discard."
+        "📥 БУФЕР: {count} новых строк(и) готово.\n"
+        "Нажмите /save, чтобы сохранить, или /cancel, чтобы отменить."
     ),
     "nothing_to_save": (
-        "⚠️ SAVE: nothing received yet.\n"
-        "Send data first, then /save — or /cancel to return."
+        "⚠️ СОХРАНЕНИЕ: пока ничего не получено.\n"
+        "Сначала отправьте данные, затем /save — или /cancel, чтобы вернуться."
     ),
-    "save_cancelled": "ℹ️ SAVE ignored — not in /card or /proxy mode.",
-    "input_cancelled": "↩️ CANCEL: returned to menu. Nothing was saved.",
+    "save_cancelled": "ℹ️ /save проигнорировано — вы не в режиме /card или /proxy.",
+    "input_cancelled": "↩️ ОТМЕНА: возврат в меню. Ничего не сохранено.",
     "card_saved": (
-        "💾 CARD REPLACEMENT DONE\n"
-        "• Previous records removed: {previous}\n"
-        "• Total stored now: {total}"
+        "💾 ЗАМЕНА КАРТ ВЫПОЛНЕНА\n"
+        "• Удалено прежних записей: {previous}\n"
+        "• Сейчас сохранено всего: {total}"
     ),
     "proxy_saved": (
-        "💾 PROXY REPLACEMENT DONE\n"
-        "• Previous records removed: {previous}\n"
-        "• Total stored now: {total}\n"
-        "• Auto-converted IP:Port:User:Pass → User:Pass:IP:Port: {converted}\n"
-        "• Stored format: Username:Password:IP:Port"
+        "💾 ЗАМЕНА ПРОКСИ ВЫПОЛНЕНА\n"
+        "• Удалено прежних записей: {previous}\n"
+        "• Сейчас сохранено всего: {total}\n"
+        "• Автопреобразовано IP:Port:User:Pass → User:Pass:IP:Port: {converted}\n"
+        "• Формат хранения: Username:Password:IP:Port"
     ),
-    "save_failed": "❌ Failed to save. Check VPS logs.",
+    "save_failed": "❌ Не удалось сохранить. Проверьте логи на VPS.",
     "card_invalid": (
-        "⚠️ No valid card lines found.\n"
-        "Format: number|MM|YY|CVC|Name"
+        "⚠️ Не найдено корректных строк с картами.\n"
+        "Формат: number|MM|YY|CVC|Name"
     ),
     "proxy_invalid": (
-        "⚠️ No valid proxy lines found.\n"
-        "Paste: IP:Port:Username:Password\n"
-        "Or stored: Username:Password:IP:Port"
+        "⚠️ Не найдено корректных строк с прокси.\n"
+        "Вставка: IP:Port:Username:Password\n"
+        "Или хранение: Username:Password:IP:Port"
     ),
 }
 
@@ -225,12 +225,12 @@ def _actor_label(update: Update) -> str:
     """Human-readable identity for shared action notifications."""
     user = update.effective_user
     if user is None:
-        return "Another user"
+        return "Другой пользователь"
     if user.username:
         return f"@{user.username}"
     if user.full_name:
         return user.full_name
-    return f"User {user.id}"
+    return f"Пользователь {user.id}"
 
 
 async def _notify_other_users(
@@ -243,7 +243,7 @@ async def _notify_other_users(
     if not _notify_chat_ids:
         _load_notify_chats()
     actor_chat_id = update.effective_chat.id if update.effective_chat else None
-    text = f"👥 SHARED ACTIVITY\n{_actor_label(update)} {action_text}"
+    text = f"👥 ОБЩАЯ АКТИВНОСТЬ\n{_actor_label(update)} {action_text}"
     for chat_id in list(_notify_chat_ids):
         if chat_id == actor_chat_id:
             continue
@@ -282,15 +282,15 @@ def _format_run_summary(data: dict) -> str:
     setup_failed = int(data.get("setup_failed", 0))
     paid_of_active = f"{paid}/{active}" if active else f"{paid}/0"
     return (
-        "🎉 TASK COMPLETED\n\n"
-        f"🌐 Active proxies: {active} / {total} total\n"
-        f"💳 Paid (Stripe OK): {paid_of_active} active\n"
-        f"⏭ Inactive (skipped): {inactive}\n"
-        f"⚠️ Card/Stripe failed: {stripe_failed}\n"
-        f"🔧 Setup failed: {setup_failed}\n\n"
-        "🪟 Each proxy browser was closed after its ~1 min payment wait.\n"
-        "👀 BlackBird remains running and active for review.\n"
-        "✅ Only the automation process has closed."
+        "🎉 ЗАДАЧА ЗАВЕРШЕНА\n\n"
+        f"🌐 Активные прокси: {active} / {total} всего\n"
+        f"💳 Оплачено (Stripe OK): {paid_of_active} активных\n"
+        f"⏭ Неактивные (пропущены): {inactive}\n"
+        f"⚠️ Ошибка карты/Stripe: {stripe_failed}\n"
+        f"🔧 Ошибка настройки: {setup_failed}\n\n"
+        "🪟 Каждый прокси-браузер закрыт после ~1 мин ожидания оплаты.\n"
+        "👀 BlackBird остаётся запущенным и активным для проверки.\n"
+        "✅ Закрыт только процесс автоматизации."
     )
 
 
@@ -304,21 +304,21 @@ def _count_file_rows(path: Path, kind: str) -> int:
 def _status_message() -> str:
     if manager.is_running():
         pid = manager.current_pid()
-        extra = f"\nProcess PID: {pid}" if pid else ""
+        extra = f"\nPID процесса: {pid}" if pid else ""
         return MESSAGES["running"] + extra
     code = manager.last_exit_code
     if manager.last_stop_was_user:
-        return MESSAGES["idle"] + "\nLast action: stopped by /stop."
+        return MESSAGES["idle"] + "\nПоследнее действие: остановлено через /stop."
     results = _read_run_results()
     if results and results.get("outcome") == "completed":
         return MESSAGES["finished_status"] + "\n\n" + _format_run_summary(results)
     if results and results.get("outcome") == "error":
-        err = results.get("error") or f"exit code {code}"
+        err = results.get("error") or f"код выхода {code}"
         return MESSAGES["failed_status"] + f"\n{err}"
     if code == 0:
         return MESSAGES["finished_status"]
     if code is not None and code != 0:
-        return MESSAGES["failed_status"] + f"\nExit code: {code}"
+        return MESSAGES["failed_status"] + f"\nКод выхода: {code}"
     return MESSAGES["idle"]
 
 
@@ -345,10 +345,10 @@ async def _watch_job_until_done(app: Application) -> None:
                 text += f"\n{err}"
             elif code in (0, None):
                 text = (
-                    "🎉 TASK COMPLETED\n"
-                    "The batch finished. Each proxy browser was closed after its "
-                    "~1 min payment wait; BlackBird remains running for review.\n"
-                    "Open /status for details if available."
+                    "🎉 ЗАДАЧА ЗАВЕРШЕНА\n"
+                    "Пакет завершён. Каждый прокси-браузер закрыт после ~1 мин "
+                    "ожидания оплаты; BlackBird остаётся запущенным для проверки.\n"
+                    "Откройте /status для подробностей, если доступны."
                 )
             else:
                 text = MESSAGES["job_failed"].format(code=code)
@@ -389,7 +389,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=True,
         one_time_keyboard=False,
-        input_field_placeholder="Commands, or paste after /card or /proxy",
+        input_field_placeholder="Команды или вставка после /card или /proxy",
     )
 
 
@@ -414,7 +414,7 @@ async def show_main_menu(update: Update, text: str) -> None:
         return
     try:
         await update.message.reply_text(
-            "⏳ Loading menu…",
+            "⏳ Загрузка меню…",
             reply_markup=ReplyKeyboardRemove(),
         )
     except Exception as exc:  # noqa: BLE001
@@ -569,7 +569,7 @@ async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await _notify_other_users(
             context.application,
             update,
-            "started the automation. ▶️",
+            "запустил(а) автоматизацию. ▶️",
         )
     elif key == "already_running":
         await update.message.reply_text(
@@ -605,7 +605,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _notify_other_users(
             context.application,
             update,
-            "connected to the bot. 👋",
+            "подключился(ась) к боту. 👋",
         )
         return
 
@@ -631,7 +631,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _notify_other_users(
                 context.application,
                 update,
-                "stopped the automation and closed BlackBird. 🛑",
+                "остановил(а) автоматизацию и закрыл(а) BlackBird. 🛑",
             )
         elif key == "not_running":
             await update.message.reply_text(
@@ -655,7 +655,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _notify_other_users(
             context.application,
             update,
-            "checked the automation status. 🔎",
+            "проверил(а) статус автоматизации. 🔎",
         )
 
 
@@ -670,7 +670,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _notify_other_users(
         context.application,
         update,
-        "opened the main menu. 📋",
+        "открыл(а) главное меню. 📋",
     )
 
 
@@ -686,7 +686,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _notify_other_users(
         context.application,
         update,
-        f"cancelled {mode or 'input'} mode without saving. ↩️",
+        f"отменил(а) режим ({mode or 'ввод'}) без сохранения. ↩️",
     )
 
 
@@ -711,7 +711,7 @@ async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _notify_other_users(
             context.application,
             update,
-            "opened card replacement mode. 💳",
+            "открыл(а) режим замены карт. 💳",
         )
 
 
@@ -736,7 +736,7 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _notify_other_users(
             context.application,
             update,
-            "opened proxy replacement mode. 🌐",
+            "открыл(а) режим замены прокси. 🌐",
         )
 
 
@@ -783,7 +783,7 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _notify_other_users(
                 context.application,
                 update,
-                f"replaced the stored card records ({previous} → {len(incoming)}). 💳",
+                f"заменил(а) сохранённые записи карт ({previous} → {len(incoming)}). 💳",
             )
             logger.info(
                 "Cards replaced → previous=%s total=%s file=%s",
@@ -813,8 +813,8 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 context.application,
                 update,
                 (
-                    f"replaced the stored proxy records ({previous} → {len(incoming)}; "
-                    f"{converted} auto-converted to Username:Password:IP:Port). 🌐"
+                    f"заменил(а) сохранённые записи прокси ({previous} → {len(incoming)}; "
+                    f"{converted} автопреобразовано в Username:Password:IP:Port). 🌐"
                 ),
             )
             logger.info(
@@ -849,7 +849,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lines = _parse_incoming_lines(text)
     if not lines:
         await update.message.reply_text(
-            "⚠️ Empty message. Send data lines, then press /save.",
+            "⚠️ Пустое сообщение. Отправьте строки данных, затем нажмите /save.",
             reply_markup=save_keyboard(),
         )
         return
@@ -870,8 +870,8 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _notify_other_users(
         context.application,
         update,
-        f"buffered {len(lines)} new {mode} row(s) for replacement "
-        f"({len(buffer)} pending). 📥",
+        f"добавил(а) в буфер {len(lines)} новых строк(и) {mode} для замены "
+        f"(ожидает {len(buffer)}). 📥",
     )
 
 
@@ -879,14 +879,14 @@ async def _post_init(app: Application) -> None:
     """Register slash commands so they also appear in Telegram's command menu."""
     await app.bot.set_my_commands(
         [
-            BotCommand("start", "Connect / start automation"),
-            BotCommand("status", "Check running status"),
-            BotCommand("stop", "Stop automation + BlackBird"),
-            BotCommand("card", "Replace cards → /save"),
-            BotCommand("proxy", "Replace proxies → /save"),
-            BotCommand("save", "Save pasted card/proxy data"),
-            BotCommand("cancel", "Leave card/proxy input without saving"),
-            BotCommand("menu", "Refresh the 5-button keyboard"),
+            BotCommand("start", "Подключиться / запустить автоматизацию"),
+            BotCommand("status", "Проверить статус выполнения"),
+            BotCommand("stop", "Остановить автоматизацию + BlackBird"),
+            BotCommand("card", "Заменить карты → /save"),
+            BotCommand("proxy", "Заменить прокси → /save"),
+            BotCommand("save", "Сохранить вставленные данные карт/прокси"),
+            BotCommand("cancel", "Выйти из ввода карт/прокси без сохранения"),
+            BotCommand("menu", "Обновить меню из 5 кнопок"),
         ]
     )
     logger.info(

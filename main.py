@@ -157,6 +157,10 @@ DELAY_STRIPE_LOAD = 30.0
 DELAY_BETWEEN_CARD_FIELDS = 3.0
 DELAY_AFTER_STRIPE_SCROLL = 3.0  # after scroll-to-bottom, before Email click
 DELAY_AFTER_PAY = 60.0           # wait after Pay for payment processing
+# Browser close control marked by the client, measured in the supplied image.
+# Scale this screenshot point to the live screen before every unconditional click.
+BROWSER_CLOSE_REFERENCE_SCREEN = (1024, 576)
+BROWSER_CLOSE_REFERENCE_POINT = (14, 30)
 # After Play: wait for proxy to enable (Continue modal AND/OR proxy browser).
 # If neither appears → proxy inactive → skip Stripe and start next workflow.
 CONTINUE_MODAL_APPEAR_TIMEOUT = 12.0
@@ -2937,9 +2941,32 @@ def close_current_proxy_browser() -> bool:
     if not is_blackbird_running():
         print("[INFO] BlackBird is off — no proxy browser to close")
         return True
+
+    # Required first action for EVERY successful workflow. The 60-second wait
+    # has already completed in fill_stripe_checkout before this function is
+    # called. Do not gate this click on AX window detection: that detection was
+    # the reason the old implementation could skip the close entirely.
+    screen_w, screen_h = pyautogui.size()
+    ref_w, ref_h = BROWSER_CLOSE_REFERENCE_SCREEN
+    ref_x, ref_y = BROWSER_CLOSE_REFERENCE_POINT
+    close_x = max(1, int(round(ref_x * screen_w / ref_w)))
+    close_y = max(1, int(round(ref_y * screen_h / ref_h)))
+    print(
+        "[INFO] UNCONDITIONAL browser close click after 60s payment wait: "
+        f"reference=({ref_x},{ref_y})/{ref_w}x{ref_h} → "
+        f"live=({close_x},{close_y})/{screen_w}x{screen_h}"
+    )
+    _release_modifier_keys()
+    _release_mouse_buttons()
+    fast_click_at(close_x, close_y)
+    time.sleep(1.2)
+
     initial = count_proxy_browser_windows()
     if initial <= 0:
-        print("[INFO] No proxy browser window open — nothing to close")
+        print(
+            "[INFO] Unconditional close click complete; no proxy browser was "
+            "detected afterward"
+        )
         return True
 
     print(f"[INFO] Closing all proxy browsers after payment wait: {initial} open")
