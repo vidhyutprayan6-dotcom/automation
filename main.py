@@ -6,9 +6,10 @@ Workflow count is driven ONLY by data.txt: one proxy line → one workflow
 (top → bottom). Cards cycle across proxies. Each proxy gets its own freshly
 generated email: random name + random 4-digit number on email.txt's domain.
 
-One workflow = New profile → proxy → Create → Refresh → Play → 40s wait for the
-proxy browser (none ⇒ inactive ⇒ next proxy) → Stripe URL → 60s load →
-email+card → Pay → 60s → close the browser; then the next data.txt proxy.
+One workflow = New profile → proxy → Create → Refresh → observe BlackBird's
+country/unreachable status → Play → 40s fixed wait → direct address-bar click →
+Stripe URL → 60s load → email+card → Pay → 60s → close the browser; then the
+next data.txt proxy.
 
 Checkout fields are located by reading the page off the screen rather than from
 fixed coordinates, so the same run works whatever country the proxy resolves to.
@@ -95,7 +96,9 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "open_profile": (906, 201),
         "play_profile": (627, 205),
         "continue_without": (1245, 592),  # case A — centered/right System Components
-        "address_bar": (970, 57),
+        # Center of the address bar marked in the client's 1024x576 screenshot.
+        # Stored in the 1920x1080 calibration used by scale_point().
+        "address_bar": (960, 57),
         "dismiss_ok": (960, 540),  # approximate center dialog (legacy)
     },
     "top_left": {
@@ -108,7 +111,8 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "open_profile": (684, 173),   # proxy refresh icon
         "play_profile": (403, 172),   # ▶ play
         "continue_without": (920, 705),  # System Components bottom-right Continue without
-        "address_bar": (970, 57),
+        # Center of the address bar marked in the client's 1024x576 screenshot.
+        "address_bar": (960, 57),
         "dismiss_ok": (959, 395),     # "BlackBird Network is not open" → OK
     },
 }
@@ -153,8 +157,8 @@ APP_LAUNCH_WAIT = (3.0, 5.0)
 
 # Fixed delays from the approved workflow spec
 DELAY_STEP = 3.0          # after New profile / New Proxy / input / refresh
-# After Play: wait this long for the proxy browser to appear. No browser by the
-# end of it means the proxy is not running → skip to the next workflow.
+# After Play: give the proxy browser this long to open before clicking its
+# address bar. Browser-window title monitoring is deliberately not used.
 DELAY_AFTER_CONTINUE = 40.0
 DELAY_STRIPE_LOAD = 60.0  # full Stripe page load before touching the form
 DELAY_BETWEEN_CARD_FIELDS = 3.0
@@ -1292,44 +1296,33 @@ def raise_profile_browser() -> bool:
 
 
 def enter_url_in_address_bar(url: str) -> bool:
-    """Focus proxy browser (not manager) → address bar → paste URL → Enter."""
+    """Click the marked proxy-browser address bar once → paste URL → Enter."""
     print(f"[INFO] Entering URL in address bar (exact): {url!r}")
-    ensure_browser_covers_blackbird()
     _release_modifier_keys()
-
-    # Do NOT set process frontmost alone — that pops the manager.
-    # ensure_browser_covers_blackbird already raised the browser window.
-    script_focus = r"""
-    tell application "System Events"
-      delay 0.05
-      keystroke "l" using {command down}
-      delay 0.15
-      keystroke "a" using {command down}
-      delay 0.05
-    end tell
-    """
-    subprocess.run(["osascript", "-e", script_focus], check=False, capture_output=True)
-    ensure_browser_covers_blackbird()
-    _release_modifier_keys()
-
     bar = COORDS.get("address_bar")
-    if bar is not None:
-        x, y = scale_point(*bar)
-        print(f"[INFO] Address bar coordinate click at ({x}, {y})")
-        human_click_at(x, y)
-        time.sleep(0.2)
-        subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to keystroke "a" using {command down}'],
-            check=False,
-            capture_output=True,
-        )
-        _release_modifier_keys()
+    if bar is None:
+        print("[ERROR] Address bar coordinate is not configured")
+        return False
+
+    x, y = scale_point(*bar)
+    print(f"[INFO] Direct address-bar click at marked location ({x}, {y})")
+    _release_mouse_buttons()
+    click_point_once(x, y, "proxy browser address bar")
+    time.sleep(0.25)
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            'tell application "System Events" to keystroke "a" using {command down}',
+        ],
+        check=False,
+        capture_output=True,
+    )
+    _release_modifier_keys()
 
     paste_exact(url)
     time.sleep(0.25)
     press_enter()
-    ensure_browser_covers_blackbird()
     print("[INFO] URL submitted")
     return True
 
@@ -2804,6 +2797,73 @@ def detect_proxy_unreachable() -> bool:
     return hit
 
 
+def detect_proxy_country_indicator() -> bool:
+    """
+    Detect the country-flag badge BlackBird shows after a successful Refresh.
+
+    The badge is the small flag-and-country pill at the bottom center of the
+    manager, as marked in the client's 1024x576 screenshot. Detection uses only
+    that narrow area, so profile icons and the macOS dock cannot trigger it.
+    """
+    try:
+        shot = np.array(pyautogui.screenshot())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Country-indicator screenshot failed: {exc}")
+        return False
+    h, w = shot.shape[:2]
+    x0, x1 = int(w * 430 / 1024), int(w * 570 / 1024)
+    y0, y1 = int(h * 365 / 576), int(h * 410 / 576)
+    region = shot[y0:y1, x0:x1, :3].astype(np.int16)
+    if region.size == 0:
+        return False
+    maximum = region.max(axis=2)
+    minimum = region.min(axis=2)
+    saturated = (maximum - minimum > 35) & (maximum > 70)
+    dark_text = maximum < 150
+    color_pixels = int(saturated.sum())
+    dark_pixels = int(dark_text.sum())
+    hit = color_pixels > 20 and dark_pixels > 15
+    if hit:
+        print(
+            "[INFO] Proxy country indicator detected after Refresh "
+            f"(color={color_pixels}, dark={dark_pixels})"
+        )
+    return hit
+
+
+def observe_proxy_status_after_refresh(seconds: float = DELAY_STEP) -> str:
+    """
+    Observe BlackBird's own post-Refresh status for the required delay.
+
+    Returns active when the country-flag badge appears, unreachable only for
+    BlackBird's explicit red error, and unknown when neither is visible. Unknown
+    is not treated as inactive; the browser workflow is still attempted.
+    """
+    deadline = time.perf_counter() + max(0.0, float(seconds))
+    status = "unknown"
+    while True:
+        if detect_proxy_unreachable():
+            status = "unreachable"
+            break
+        if detect_proxy_country_indicator():
+            status = "active"
+            break
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.35, remaining))
+
+    remaining = deadline - time.perf_counter()
+    if remaining > 0:
+        time.sleep(remaining)
+    if status == "unknown":
+        print(
+            "[WARN] No country badge was captured after Refresh; status is "
+            "unknown, so the workflow will still try the browser"
+        )
+    return status
+
+
 def wait_and_click_continue_without(
     appear_timeout: float = CONTINUE_MODAL_APPEAR_TIMEOUT,
     *,
@@ -3393,14 +3453,14 @@ def create_profile_with_proxy(proxy: str) -> bool:
 
 def refresh_and_play() -> Tuple[bool, Dict[str, object]]:
     """
-    Refresh (newest row) → 3s → Play.
-    Returns (ok, pre-Play window baseline) so the caller can detect a new browser.
-    Manager is raised on top for these clicks (setup phase, before this proxy's
-    browser exists); browser-front policy resumes after the post-Play buffer.
+    Refresh → observe BlackBird's country/unreachable indicator for 3s → Play.
+
+    No browser-window title monitoring is performed. The returned status is
+    BlackBird's own post-Refresh signal: active, unreachable, or unknown.
     """
     if not is_blackbird_running():
         print("[ERROR] BlackBird is not running — not relaunching")
-        return False, {"classified": 0, "windows": None, "large": None}
+        return False, {"proxy_status": "unknown"}
     detect_and_apply_layout()
     time.sleep(0.3)
     # Refresh and Play are manager buttons clicked by coordinate — keep the
@@ -3410,15 +3470,16 @@ def refresh_and_play() -> Tuple[bool, Dict[str, object]]:
         lambda: click_target("open_profile", "Refresh (proxy icon)", activate_app=False),
         "Refresh (proxy icon)",
     ):
-        return False, {"classified": 0, "windows": None, "large": None}
-    wait_seconds(DELAY_STEP, "after Refresh")
-    browser_baseline = capture_browser_baseline()
+        return False, {"proxy_status": "unknown"}
+    proxy_status = observe_proxy_status_after_refresh(DELAY_STEP)
+    status_info: Dict[str, object] = {"proxy_status": proxy_status}
+    print(f"[INFO] BlackBird post-Refresh proxy status: {proxy_status}")
     if not retry_manager_click(
         lambda: click_target("play_profile", "Play (▶)", activate_app=False),
         "Play (▶)",
     ):
-        return False, browser_baseline
-    return True, browser_baseline
+        return False, status_info
+    return True, status_info
 
 
 def run_one_workflow(
@@ -3472,27 +3533,29 @@ def run_one_workflow(
         print(f"[ERROR] Workflow {index}/{total}: create profile failed for this line")
         return_to_blackbird_manager(f"workflow {index} create failed")
         return "setup_failed"
-    play_ok, browser_baseline = refresh_and_play()
+    play_ok, proxy_info = refresh_and_play()
     if not play_ok:
         print(f"[ERROR] Workflow {index}/{total}: Refresh/Play failed for this line")
         return_to_blackbird_manager(f"workflow {index} play failed")
         return "setup_failed"
 
-    # Play → 40s for the proxy browser to appear → search bar.
-    begin_browser_front_mode()
-    wait_seconds_keep_browser_front(
-        DELAY_AFTER_CONTINUE, "after Play (40s buffer — waiting for proxy browser)"
-    )
-
-    # No browser after the buffer means this proxy is not running. Skip Stripe
-    # entirely and move on to the next data.txt line.
-    if not proxy_browser_appeared(browser_baseline):
+    # BlackBird's explicit red error is authoritative. A missing country badge
+    # is only "unknown" (it may be brief), never proof that the proxy is dead.
+    if proxy_info.get("proxy_status") == "unreachable":
         print(
-            f"[WARN] Workflow {index}/{total}: proxy INACTIVE — no browser opened "
-            f"within {DELAY_AFTER_CONTINUE:.0f}s; moving to the next proxy"
+            f"[WARN] Workflow {index}/{total}: proxy INACTIVE — BlackBird "
+            "reported Proxy unreachable; moving to the next proxy"
         )
         return_to_blackbird_manager(f"workflow {index} inactive proxy")
         return "inactive"
+
+    # Do not inspect, raise, minimize, or otherwise monitor windows here. Play
+    # opens the browser in front. After the required 40s, click the exact address
+    # bar location marked by the client and continue.
+    wait_seconds(
+        DELAY_AFTER_CONTINUE,
+        "after Play (40s browser startup buffer; no window monitoring)",
+    )
 
     if not enter_url_in_address_bar(checkout_url):
         close_proxy_browser_best_effort(f"workflow {index} URL failed")
@@ -3612,7 +3675,10 @@ def _startup_environment_report() -> None:
     print(f"[INFO] z-order: manager on top ONLY during profile setup; browser on top during Stripe")
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
-    print(f"[INFO] after-Play: 40s wait for proxy browser (none → inactive → next proxy)")
+    print(
+        "[INFO] after-Play: 40s fixed buffer → direct marked address-bar click "
+        "(no browser-window monitoring)"
+    )
     print(f"[INFO] Stripe: 60s page load → card fill → Pay → 60s → close browser")
     print(f"[INFO] pairing: workflows=len(proxies); cards cycle; random email per proxy")
 
