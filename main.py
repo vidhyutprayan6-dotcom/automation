@@ -1894,7 +1894,12 @@ def click_continue_without() -> bool:
 
 
 def count_proxy_browser_windows() -> int:
-    """How many BlackBird proxy-browser windows are open (not the manager)."""
+    """
+    How many BlackBird proxy-browser windows are open (not the manager).
+
+    Title-based, so it can undercount when a browser carries an unexpected name.
+    Treat it as one hint among several, never as proof that no browser exists.
+    """
     script = f"""
     tell application "System Events"
       if not (exists process "BlackBird") then return "0"
@@ -1904,17 +1909,142 @@ def count_proxy_browser_windows() -> int:
       end tell
     end tell
     """
-    out = subprocess.run(
-        ["osascript", "-e", script],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except subprocess.TimeoutExpired:
+        print("[WARN] Browser-count query timed out — reporting 0 (not proof of absence)")
+        return 0
     text = (out.stdout or "").strip()
     try:
         return max(0, int(text))
     except ValueError:
         return 0
+
+
+def list_blackbird_windows() -> Optional[List[Tuple[str, int, int, bool]]]:
+    """
+    Every BlackBird window as (name, width, height, minimized).
+
+    Returns None when the window list cannot be read at all (BlackBird gone,
+    AppleScript error, Accessibility hiccup). None means "unknown", which is
+    deliberately different from an empty list: callers must not treat a failed
+    query as proof that no window exists.
+    """
+    script = r"""
+    tell application "System Events"
+      if not (exists process "BlackBird") then return "NOPROC"
+      tell process "BlackBird"
+        set winList to "OK"
+        repeat with w in windows
+          set wname to "?"
+          try
+            set wname to name of w as text
+          end try
+          set ww to 0
+          set wh to 0
+          try
+            set wsize to size of w
+            set ww to item 1 of wsize
+            set wh to item 2 of wsize
+          end try
+          set wmin to false
+          try
+            set wmin to value of attribute "AXMinimized" of w
+          end try
+          set rowText to wname & "|" & (ww as text) & "|" & (wh as text)
+          set rowText to rowText & "|" & (wmin as text)
+          set winList to winList & linefeed & rowText
+        end repeat
+        return winList
+      end tell
+    end tell
+    """
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        print("[WARN] Window list query timed out")
+        return None
+    except OSError as exc:
+        print(f"[WARN] Window list query could not run: {exc}")
+        return None
+    text = (out.stdout or "").strip()
+    if not text.startswith("OK"):
+        err = (out.stderr or "").strip()
+        print(f"[WARN] Could not list BlackBird windows: {err[:160] or text[:160] or 'no output'}")
+        return None
+    windows: List[Tuple[str, int, int, bool]] = []
+    for raw in text.splitlines()[1:]:
+        raw = raw.strip()
+        if not raw or raw.count("|") < 3:
+            continue
+        name, w_txt, h_txt, min_txt = raw.rsplit("|", 3)
+        try:
+            width = int(float(w_txt))
+            height = int(float(h_txt))
+        except ValueError:
+            continue
+        windows.append((name, width, height, min_txt.strip().lower() == "true"))
+    return windows
+
+
+def _is_modal_window_name(name: str) -> bool:
+    low = name.lower()
+    return "system components" in low or "continue" in low
+
+
+def count_large_app_windows(windows: List[Tuple[str, int, int, bool]]) -> int:
+    """
+    Count real BlackBird windows: manager and proxy browsers, no modals/toasts.
+
+    Title strings are ignored on purpose. Play either adds a real window or it
+    does not, and that delta is what tells an active proxy from a dead one.
+    """
+    total = 0
+    for name, width, height, _minimized in windows:
+        if _is_modal_window_name(name):
+            continue
+        if width < 400 or height < 300:
+            continue
+        total += 1
+    return total
+
+
+def describe_windows(windows: Optional[List[Tuple[str, int, int, bool]]]) -> str:
+    if windows is None:
+        return "unreadable"
+    if not windows:
+        return "none"
+    return "; ".join(
+        f"{name!r} {width}x{height}{' min' if minimized else ''}"
+        for name, width, height, minimized in windows
+    )
+
+
+def capture_browser_baseline() -> Dict[str, object]:
+    """Window state just before Play, used to spot the browser Play opens."""
+    windows = list_blackbird_windows()
+    baseline: Dict[str, object] = {
+        "classified": count_proxy_browser_windows(),
+        "windows": windows,
+        "large": count_large_app_windows(windows) if windows is not None else None,
+    }
+    print(
+        f"[INFO] Pre-Play window baseline: large={baseline['large']} "
+        f"classified_browsers={baseline['classified']} | {describe_windows(windows)}"
+    )
+    return baseline
 
 
 def proxy_enabled_ui_present(*, browser_baseline: int) -> Tuple[bool, str]:
@@ -1955,35 +2085,71 @@ def retry_manager_click(action, label: str, attempts: int = 3) -> bool:
     return False
 
 
-def proxy_browser_appeared(browser_baseline: int, grace: float = 6.0) -> bool:
+def _browser_signal(baseline: Dict[str, object], *, cheap_only: bool) -> Optional[str]:
     """
-    True if this proxy's browser window is open after the post-Play wait.
+    Reason the proxy browser looks open, or None if nothing indicates one.
+
+    Several independent signals are used because window titles in BlackBird are
+    not dependable: a proxy browser and the manager can carry the same name, so
+    a title-based count alone can miss a browser that is plainly on screen. The
+    cheap window-list signal is authoritative; the title-based ones only add
+    evidence and are skipped while polling.
+    """
+    base_large = baseline.get("large")
+    windows = list_blackbird_windows()
+    if windows is None:
+        # The window list could not be read. Never call a proxy dead on a failed
+        # query — assume the browser is there and let the Stripe steps decide.
+        return "window list unreadable — assuming browser is open"
+
+    large = count_large_app_windows(windows)
+    if isinstance(base_large, int) and large > base_large:
+        return f"new window after Play (large {base_large} → {large})"
+    if isinstance(base_large, int) and base_large == 0 and large > 0:
+        return f"window present where none existed before Play (large={large})"
+    if cheap_only:
+        return None
+
+    classified = count_proxy_browser_windows()
+    base_classified = baseline.get("classified")
+    if isinstance(base_classified, int) and classified > base_classified:
+        return f"classified browser count {base_classified} → {classified}"
+    if classified > 0 and get_proxy_browser_frame() is not None:
+        return "proxy browser window frame readable"
+    return None
+
+
+def proxy_browser_appeared(baseline: Dict[str, object], grace: float = 10.0) -> bool:
+    """
+    True if Play opened this proxy's browser window.
 
     An inactive proxy never opens a browser, which is how the run tells the two
-    apart. The extra grace polling only covers a browser that is a moment slow
-    to register in the Accessibility tree — it never invents one.
+    apart. Grace polling only covers a browser that is slow to register; it
+    cannot invent one. On a negative result the full window list is logged so a
+    misdetection can be diagnosed from the run log.
     """
-    browsers = count_proxy_browser_windows()
-    if browsers > browser_baseline:
-        print(f"[INFO] Proxy browser present: {browsers} > baseline {browser_baseline}")
+    signal = _browser_signal(baseline, cheap_only=False)
+    if signal:
+        print(f"[INFO] Proxy browser detected: {signal}")
         return True
+
     deadline = time.perf_counter() + max(0.0, grace)
     while time.perf_counter() < deadline:
-        time.sleep(0.5)
-        browsers = count_proxy_browser_windows()
-        if browsers > browser_baseline:
-            print(
-                f"[INFO] Proxy browser appeared during grace check: "
-                f"{browsers} > baseline {browser_baseline}"
-            )
+        time.sleep(1.0)
+        signal = _browser_signal(baseline, cheap_only=True)
+        if signal:
+            print(f"[INFO] Proxy browser detected during grace check: {signal}")
             return True
-        if get_proxy_browser_frame() is not None:
-            print("[INFO] Proxy browser detected by window frame during grace check")
-            return True
-    print(
-        f"[WARN] No proxy browser after Play (count={browsers}, "
-        f"baseline={browser_baseline})"
-    )
+
+    # Last word goes to the full check, including the title-based signals.
+    signal = _browser_signal(baseline, cheap_only=False)
+    if signal:
+        print(f"[INFO] Proxy browser detected on final check: {signal}")
+        return True
+
+    print("[WARN] No proxy browser after Play — proxy looks inactive")
+    print(f"[WARN]   before Play: {describe_windows(baseline.get('windows'))}")
+    print(f"[WARN]   after  Play: {describe_windows(list_blackbird_windows())}")
     return False
 
 
@@ -3225,16 +3391,16 @@ def create_profile_with_proxy(proxy: str) -> bool:
     return True
 
 
-def refresh_and_play() -> Tuple[bool, int]:
+def refresh_and_play() -> Tuple[bool, Dict[str, object]]:
     """
     Refresh (newest row) → 3s → Play.
-    Returns (ok, browser_window_count_before_play) so caller can detect a new browser.
+    Returns (ok, pre-Play window baseline) so the caller can detect a new browser.
     Manager is raised on top for these clicks (setup phase, before this proxy's
     browser exists); browser-front policy resumes after the post-Play buffer.
     """
     if not is_blackbird_running():
         print("[ERROR] BlackBird is not running — not relaunching")
-        return False, 0
+        return False, {"classified": 0, "windows": None, "large": None}
     detect_and_apply_layout()
     time.sleep(0.3)
     # Refresh and Play are manager buttons clicked by coordinate — keep the
@@ -3244,10 +3410,9 @@ def refresh_and_play() -> Tuple[bool, int]:
         lambda: click_target("open_profile", "Refresh (proxy icon)", activate_app=False),
         "Refresh (proxy icon)",
     ):
-        return False, 0
+        return False, {"classified": 0, "windows": None, "large": None}
     wait_seconds(DELAY_STEP, "after Refresh")
-    browser_baseline = count_proxy_browser_windows()
-    print(f"[INFO] Proxy browser count before Play: {browser_baseline}")
+    browser_baseline = capture_browser_baseline()
     if not retry_manager_click(
         lambda: click_target("play_profile", "Play (▶)", activate_app=False),
         "Play (▶)",
