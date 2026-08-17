@@ -44,6 +44,7 @@ except ImportError as exc:
     ) from exc
 
 from stripe_vision import StripeForm, detect_stripe_form
+from screen_recorder import start_screen_recording
 
 # ---------------------------------------------------------------------------
 # Config
@@ -3698,6 +3699,10 @@ def _startup_environment_report() -> None:
 
 
 def main() -> None:
+    # Completely isolated background service: no pyautogui/Quartz calls and no
+    # workflow timing changes. atexit/SIGTERM cleanup finalizes and uploads the
+    # last partial segment when automation completes or /stop is pressed.
+    start_screen_recording(SCRIPT_DIR)
     _startup_environment_report()
 
     args = parse_args()

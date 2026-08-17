@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "$ROOT" || exit 1
 
 PYTHON=".venv/bin/python"
-IMPORTS="import cv2, numpy, pyautogui, pyperclip, Quartz, stripe_vision"
+IMPORTS="import cv2, numpy, pyautogui, pyperclip, Quartz, stripe_vision, screen_recorder"
 
 die() {
   echo ""
@@ -49,7 +49,7 @@ fi
 
 # --- 2. project files -------------------------------------------------------
 MISSING=""
-for f in main.py stripe_vision.py requirements.txt data.txt card.txt email.txt; do
+for f in main.py stripe_vision.py screen_recorder.py requirements.txt data.txt card.txt email.txt; do
   if [[ ! -f "$f" ]]; then
     MISSING="$MISSING $f"
   fi
@@ -110,6 +110,14 @@ if ! "$PYTHON" -c "$IMPORTS; print(' All components loaded.')"; then
       "" \
       "Try a clean rebuild:" \
       "  rm -rf .venv && bash run.sh"
+fi
+
+# Screen recording is intentionally optional at launcher level: a missing
+# recorder must never prevent the core automation from running.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo ""
+  echo "WARNING: ffmpeg is not installed, so screen recording will be disabled."
+  echo "Install it once with: brew install ffmpeg"
 fi
 
 # --- 6. go ------------------------------------------------------------------

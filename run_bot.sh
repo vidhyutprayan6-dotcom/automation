@@ -19,7 +19,7 @@ if ! grep -qE '^TELEGRAM_BOT_TOKEN=.+' .env 2>/dev/null; then
   exit 1
 fi
 
-for f in telegram_bot.py process_manager.py main.py stripe_vision.py; do
+for f in telegram_bot.py process_manager.py main.py stripe_vision.py screen_recorder.py; do
   if [[ ! -f "$f" ]]; then
     echo "ERROR: $f missing in $ROOT"
     echo "Copy the whole project folder across, not just a few files."
@@ -32,7 +32,7 @@ for needle in 'KeyboardButton("/card")' 'KeyboardButton("/proxy")' 'BOT_UI_VERSI
   if ! grep -qF "$needle" telegram_bot.py; then
     echo "ERROR: telegram_bot.py is outdated or incomplete (missing: $needle)"
     echo "Copy the LATEST project files into: $ROOT"
-    echo "Required at minimum: main.py telegram_bot.py process_manager.py run_bot.sh requirements.txt"
+    echo "Required at minimum: main.py telegram_bot.py process_manager.py screen_recorder.py run_bot.sh requirements.txt"
     exit 1
   fi
 done
@@ -51,6 +51,11 @@ echo "Installing dependencies (includes python-telegram-bot)..."
 .venv/bin/python -m pip install -r requirements.txt
 
 mkdir -p logs
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "WARNING: ffmpeg is missing; automation will run but screen recording is disabled."
+  echo "Install it once with: brew install ffmpeg"
+fi
 
 # Stop any older telegram_bot.py using the same file (avoid two bots / stale UI)
 if command -v pgrep >/dev/null 2>&1; then

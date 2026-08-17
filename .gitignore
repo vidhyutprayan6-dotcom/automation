@@ -19,6 +19,7 @@ env/
 # Logs / runtime state
 logs/
 *.log
+recordings/
 
 # Client data — keep local, never push to GitHub
 card.txt

@@ -24,6 +24,8 @@ AUTOMATION_LOG = LOG_DIR / "automation.log"
 PID_FILE = LOG_DIR / "automation.pid"
 
 GRACEFUL_TIMEOUT_SEC = 15.0
+RECORDING_UPLOAD_TIMEOUT_SEC = 240.0
+RECORDING_SHUTDOWN_MARKER = LOG_DIR / "screen_recording_shutdown.active"
 BLACKBIRD_APP_PATH = Path("/Applications/BlackBird.app")
 BLACKBIRD_PROCESS_NAMES = ("BlackBird", "BlackBird Network")
 # Calibrated OK for "BlackBird Network is not open anymore" (1920x1080 top_left)
@@ -388,12 +390,19 @@ class ProcessManager:
             except ProcessLookupError:
                 return
 
-        deadline = time.monotonic() + GRACEFUL_TIMEOUT_SEC
+        started_waiting = time.monotonic()
+        deadline = started_waiting + GRACEFUL_TIMEOUT_SEC
+        recording_deadline = started_waiting + RECORDING_UPLOAD_TIMEOUT_SEC
         while time.monotonic() < deadline:
             try:
                 os.kill(pid, 0)
             except OSError:
                 return
+            # main.py creates this marker only while finalizing/uploading the
+            # current partial screen recording. Give that intentional cleanup
+            # time without slowing the normal no-recorder stop path.
+            if RECORDING_SHUTDOWN_MARKER.is_file():
+                deadline = max(deadline, recording_deadline)
             time.sleep(0.2)
 
         try:
