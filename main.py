@@ -6,8 +6,9 @@ Workflow count is driven ONLY by data.txt: one proxy line → one workflow
 (top → bottom). Cards cycle across proxies. Each proxy gets its own freshly
 generated email: random name + random 4-digit number on email.txt's domain.
 
-One workflow = New profile → proxy → Refresh → Play → 30s buffer →
-Stripe URL → email+card → Pay; then continue with the next data.txt proxy.
+One workflow = New profile → proxy → Create → Refresh → Play → 40s wait for the
+proxy browser (none ⇒ inactive ⇒ next proxy) → Stripe URL → 60s load →
+email+card → Pay → 60s → close the browser; then the next data.txt proxy.
 
 Checkout fields are located by reading the page off the screen rather than from
 fixed coordinates, so the same run works whatever country the proxy resolves to.
@@ -152,8 +153,10 @@ APP_LAUNCH_WAIT = (3.0, 5.0)
 
 # Fixed delays from the approved workflow spec
 DELAY_STEP = 3.0          # after New profile / New Proxy / input / refresh
-DELAY_AFTER_CONTINUE = 30.0
-DELAY_STRIPE_LOAD = 30.0
+# After Play: wait this long for the proxy browser to appear. No browser by the
+# end of it means the proxy is not running → skip to the next workflow.
+DELAY_AFTER_CONTINUE = 40.0
+DELAY_STRIPE_LOAD = 60.0  # full Stripe page load before touching the form
 DELAY_BETWEEN_CARD_FIELDS = 3.0
 DELAY_AFTER_STRIPE_SCROLL = 3.0  # after scroll-to-bottom, before Email click
 DELAY_AFTER_PAY = 60.0           # wait after Pay for payment processing
@@ -1927,6 +1930,63 @@ def proxy_enabled_ui_present(*, browser_baseline: int) -> Tuple[bool, str]:
     return False, f"none(browsers={browsers}, baseline={browser_baseline})"
 
 
+def retry_manager_click(action, label: str, attempts: int = 3) -> bool:
+    """
+    Run a manager-phase click and retry it if it did not register.
+
+    Every step of the setup phase must actually happen. A click can be lost when
+    a system modal appears over the button or the manager slips behind a window,
+    so a failed attempt clears the modal, re-raises the manager and clicks again.
+    The happy path is untouched: a click that works first time returns at once.
+    """
+    for attempt in range(1, attempts + 1):
+        if action():
+            if attempt > 1:
+                print(f"[INFO] {label}: succeeded on attempt {attempt}/{attempts}")
+            return True
+        print(f"[WARN] {label}: attempt {attempt}/{attempts} did not register — retrying")
+        _release_modifier_keys()
+        _release_mouse_buttons()
+        ensure_network_warning_dismissed()
+        restore_manager_windows()
+        raise_manager_to_front()
+        time.sleep(1.0)
+    print(f"[ERROR] {label}: still not performed after {attempts} attempts")
+    return False
+
+
+def proxy_browser_appeared(browser_baseline: int, grace: float = 6.0) -> bool:
+    """
+    True if this proxy's browser window is open after the post-Play wait.
+
+    An inactive proxy never opens a browser, which is how the run tells the two
+    apart. The extra grace polling only covers a browser that is a moment slow
+    to register in the Accessibility tree — it never invents one.
+    """
+    browsers = count_proxy_browser_windows()
+    if browsers > browser_baseline:
+        print(f"[INFO] Proxy browser present: {browsers} > baseline {browser_baseline}")
+        return True
+    deadline = time.perf_counter() + max(0.0, grace)
+    while time.perf_counter() < deadline:
+        time.sleep(0.5)
+        browsers = count_proxy_browser_windows()
+        if browsers > browser_baseline:
+            print(
+                f"[INFO] Proxy browser appeared during grace check: "
+                f"{browsers} > baseline {browser_baseline}"
+            )
+            return True
+        if get_proxy_browser_frame() is not None:
+            print("[INFO] Proxy browser detected by window frame during grace check")
+            return True
+    print(
+        f"[WARN] No proxy browser after Play (count={browsers}, "
+        f"baseline={browser_baseline})"
+    )
+    return False
+
+
 def wait_seconds(seconds: float, reason: str) -> None:
     seconds = max(0.0, float(seconds))
     print(f"[INFO] Waiting {seconds:.0f}s — {reason}")
@@ -2542,7 +2602,9 @@ def fill_stripe_checkout(card: Dict[str, str], email: str) -> bool:
     time.sleep(0.25)
     click_point_once(pay_point[0], pay_point[1], "7 Pay button")
     print("[INFO] Pay clicked — waiting 60s for payment processing...")
-    wait_seconds(DELAY_AFTER_PAY, "payment processing after Pay")
+    # Hold the browser on top for the whole wait: the close button is clicked
+    # right afterwards, and a manager window drifting in front would swallow it.
+    wait_seconds_keep_browser_front(DELAY_AFTER_PAY, "payment processing after Pay")
     print("[INFO] Payment wait complete")
     return True
 
@@ -3042,6 +3104,24 @@ def close_current_proxy_browser() -> bool:
     return False
 
 
+def close_proxy_browser_best_effort(reason: str) -> None:
+    """
+    Close this proxy's browser on a failure path.
+
+    The successful path treats a stuck browser as fatal, but a workflow that
+    already failed must not also abort the remaining proxies — a leftover window
+    would otherwise sit in front of the manager and swallow the next New profile
+    click, so it is closed here on a best-effort basis.
+    """
+    print(f"[INFO] Closing proxy browser after failure: {reason}")
+    try:
+        if close_current_proxy_browser():
+            return
+        print(f"[WARN] Proxy browser still open after failure close ({reason})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Proxy browser close raised on failure path ({reason}): {exc}")
+
+
 def dismiss_open_sheets() -> None:
     """Press Escape to close stray New profile / dialog sheets (not browsers)."""
     _release_modifier_keys()
@@ -3098,20 +3178,26 @@ def create_profile_with_proxy(proxy: str) -> bool:
         print("[ERROR] Network modal blocks workflow — will not click New profile")
         return False
 
-    if not click_named_or_coord(
-        "new_profile",
+    if not retry_manager_click(
+        lambda: click_named_or_coord(
+            "new_profile",
+            "New profile",
+            ["+ New profile", "+ New Profile"],
+            activate_app=False,
+        ),
         "New profile",
-        ["+ New profile", "+ New Profile"],
-        activate_app=False,
     ):
         return False
     wait_seconds(DELAY_STEP, "after New profile")
 
-    if not click_new_proxy():
+    if not retry_manager_click(click_new_proxy, "New Proxy"):
         return False
     wait_seconds(DELAY_STEP, "after New Proxy")
 
-    if not click_target("proxy_input", "Proxy input field", activate_app=False):
+    if not retry_manager_click(
+        lambda: click_target("proxy_input", "Proxy input field", activate_app=False),
+        "Proxy input field",
+    ):
         return False
     time.sleep(0.35)
     clear_field_macos()
@@ -3119,11 +3205,14 @@ def create_profile_with_proxy(proxy: str) -> bool:
     human_type(proxy)
     wait_seconds(DELAY_STEP, "after proxy input")
 
-    if not click_named_or_coord(
-        "create_profile",
+    if not retry_manager_click(
+        lambda: click_named_or_coord(
+            "create_profile",
+            "Create profile",
+            ["Create profile", "Create Profile"],
+            activate_app=False,
+        ),
         "Create profile",
-        ["Create profile", "Create Profile"],
-        activate_app=False,
     ):
         return False
     time.sleep(1.2)
@@ -3151,12 +3240,18 @@ def refresh_and_play() -> Tuple[bool, int]:
     # Refresh and Play are manager buttons clicked by coordinate — keep the
     # manager on top, including if a failure path left a browser open.
     raise_manager_to_front()
-    if not click_target("open_profile", "Refresh (proxy icon)", activate_app=False):
+    if not retry_manager_click(
+        lambda: click_target("open_profile", "Refresh (proxy icon)", activate_app=False),
+        "Refresh (proxy icon)",
+    ):
         return False, 0
     wait_seconds(DELAY_STEP, "after Refresh")
     browser_baseline = count_proxy_browser_windows()
     print(f"[INFO] Proxy browser count before Play: {browser_baseline}")
-    if not click_target("play_profile", "Play (▶)", activate_app=False):
+    if not retry_manager_click(
+        lambda: click_target("play_profile", "Play (▶)", activate_app=False),
+        "Play (▶)",
+    ):
         return False, browser_baseline
     return True, browser_baseline
 
@@ -3212,35 +3307,53 @@ def run_one_workflow(
         print(f"[ERROR] Workflow {index}/{total}: create profile failed for this line")
         return_to_blackbird_manager(f"workflow {index} create failed")
         return "setup_failed"
-    play_ok, _browser_baseline = refresh_and_play()
+    play_ok, browser_baseline = refresh_and_play()
     if not play_ok:
         print(f"[ERROR] Workflow {index}/{total}: Refresh/Play failed for this line")
         return_to_blackbird_manager(f"workflow {index} play failed")
         return "setup_failed"
 
-    # Play → wait buffer → search bar. Continue without is no longer shown.
+    # Play → 40s for the proxy browser to appear → search bar.
     begin_browser_front_mode()
     wait_seconds_keep_browser_front(
-        DELAY_AFTER_CONTINUE, "after Play (30s buffer before search bar)"
+        DELAY_AFTER_CONTINUE, "after Play (40s buffer — waiting for proxy browser)"
     )
 
+    # No browser after the buffer means this proxy is not running. Skip Stripe
+    # entirely and move on to the next data.txt line.
+    if not proxy_browser_appeared(browser_baseline):
+        print(
+            f"[WARN] Workflow {index}/{total}: proxy INACTIVE — no browser opened "
+            f"within {DELAY_AFTER_CONTINUE:.0f}s; moving to the next proxy"
+        )
+        return_to_blackbird_manager(f"workflow {index} inactive proxy")
+        return "inactive"
+
     if not enter_url_in_address_bar(checkout_url):
+        close_proxy_browser_best_effort(f"workflow {index} URL failed")
         return_to_blackbird_manager(f"workflow {index} address bar / URL failed")
         return "stripe_failed"
 
     wait_seconds_keep_browser_front(
-        DELAY_STRIPE_LOAD, "Stripe page full load (browser held on top)"
+        DELAY_STRIPE_LOAD, "Stripe page full load (60s, browser held on top)"
     )
     ensure_browser_covers_blackbird()
 
     if not fill_stripe_checkout(card, email):
+        close_proxy_browser_best_effort(f"workflow {index} Stripe/Pay failed")
         return_to_blackbird_manager(f"workflow {index} Stripe/Pay failed")
         return "stripe_failed"
 
     # Card connection succeeded and the ~60s payment wait already elapsed inside
     # fill_stripe_checkout. Per updated spec, close this proxy's browser now so
     # an inactive proxy's original browser cannot re-open the card connection.
-    if not close_current_proxy_browser():
+    closed = close_current_proxy_browser()
+    if not closed:
+        print("[WARN] Proxy browser still open — running the full close sequence again")
+        ensure_browser_covers_blackbird()
+        time.sleep(1.0)
+        closed = close_current_proxy_browser()
+    if not closed:
         raise RuntimeError(
             f"Workflow {index}/{total}: proxy browser could not be closed; "
             "refusing to start the next proxy while the previous browser is open"
@@ -3334,7 +3447,8 @@ def _startup_environment_report() -> None:
     print(f"[INFO] z-order: manager on top ONLY during profile setup; browser on top during Stripe")
     print(f"[INFO] place_blackbird_on_top: DELETED (absolute no-op)")
     print(f"[INFO] relaunch-if-closed: DISABLED (single launch only)")
-    print(f"[INFO] after-Play: 30s buffer → address bar (no Continue without)")
+    print(f"[INFO] after-Play: 40s wait for proxy browser (none → inactive → next proxy)")
+    print(f"[INFO] Stripe: 60s page load → card fill → Pay → 60s → close browser")
     print(f"[INFO] pairing: workflows=len(proxies); cards cycle; random email per proxy")
 
     if sys.platform != "darwin":
@@ -3468,12 +3582,12 @@ def main() -> None:
     active = counts["paid"] + counts["stripe_failed"]
     print("")
     print("=" * 60)
-    print("[INFO] ALL DONE — batch processed every data.txt line")
+    print("[INFO] CORRECT — every data.txt proxy line was processed")
     print(f"[INFO] Total proxies: {total}")
-    print(f"[INFO] Active (executed): {active}/{total}")
-    print(f"[INFO] Paid (Stripe OK): {counts['paid']}/{active if active else 0}")
-    print(f"[INFO] Inactive (skipped): {counts['inactive']}")
-    print(f"[INFO] Stripe/card failed: {counts['stripe_failed']}")
+    print(f"[INFO] Active proxies (browser opened): {active}/{total}")
+    print(f"[INFO] Cards connected (Stripe Pay clicked): {counts['paid']}/{active if active else 0}")
+    print(f"[INFO] Inactive proxies (no browser, skipped): {counts['inactive']}")
+    print(f"[INFO] Card/Stripe failed: {counts['stripe_failed']}")
     print(f"[INFO] Setup failed: {counts['setup_failed']}")
     print("=" * 60)
     # Normal completion owns only this automation process. Each proxy browser

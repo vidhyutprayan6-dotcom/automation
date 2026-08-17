@@ -19,3 +19,7 @@ env/
 # Logs / runtime state
 logs/
 *.log
+
+# Client data — keep local, never push to GitHub
+card.txt
+data.txt
