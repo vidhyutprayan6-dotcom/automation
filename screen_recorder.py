@@ -22,6 +22,11 @@ DEFAULT_SEGMENT_SECONDS = 30 * 60
 TESTING_SEGMENT_SECONDS = 60  # current testing phase: 1-minute segments
 TELEGRAM_MAX_BYTES = 49 * 1024 * 1024
 MIN_VALID_VIDEO_BYTES = 32 * 1024
+# Hard budget for stop(): kill capture and return so automation can exit.
+# Must stay under ~10s. Never wait for Telegram uploads on shutdown.
+SHUTDOWN_FFMPEG_WAIT_SEC = 2.0
+SHUTDOWN_THREAD_JOIN_SEC = 2.0
+SHUTDOWN_UPLOAD_JOIN_SEC = 1.0
 
 
 def _log(message: str) -> None:
@@ -88,15 +93,18 @@ class ScreenRecorder:
         load_dotenv(self.project_dir / ".env")
         self.segment_seconds = _segment_seconds()
         self._started = True
+        # Daemon threads: while the run is active they still upload every
+        # segment, but they must never keep main.py alive after the workflow
+        # has already finished and asked to exit.
         self._upload_thread = threading.Thread(
             target=self._upload_loop,
             name="screen-upload",
-            daemon=False,
+            daemon=True,
         )
         self._record_thread = threading.Thread(
             target=self._record_loop,
             name="screen-record",
-            daemon=False,
+            daemon=True,
         )
         self._upload_thread.start()
         self._record_thread.start()
@@ -336,7 +344,7 @@ class ScreenRecorder:
             process = self._process
         if process is None or process.poll() is not None:
             return
-        _log("Automation ending: finalizing the current partial segment")
+        _log("Automation ending: stopping ffmpeg immediately")
         try:
             if process.stdin is not None:
                 process.stdin.write(b"q\n")
@@ -344,24 +352,26 @@ class ScreenRecorder:
         except (BrokenPipeError, OSError):
             pass
         try:
-            process.wait(timeout=20)
+            process.wait(timeout=SHUTDOWN_FFMPEG_WAIT_SEC)
             return
         except subprocess.TimeoutExpired:
             pass
         try:
-            process.send_signal(signal.SIGINT)
-            process.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                process.kill()
-                process.wait(timeout=5)
-            except ProcessLookupError:
-                pass
-            except subprocess.TimeoutExpired:
-                _log("ffmpeg did not exit after kill request")
+            process.kill()
+            process.wait(timeout=1.0)
+        except ProcessLookupError:
+            pass
+        except subprocess.TimeoutExpired:
+            _log("ffmpeg did not exit after kill request")
 
     def stop(self) -> None:
-        """Stop capture, finalize and upload the last partial recording."""
+        """
+        Stop capture and return immediately so automation can exit.
+
+        Mid-run segment uploads are unaffected. On shutdown we only kill ffmpeg
+        and release the process — we never wait for Telegram uploads, because
+        that blocked exit for many minutes after every proxy was already done.
+        """
         with self._stop_lock:
             if self._stopped:
                 return
@@ -375,17 +385,16 @@ class ScreenRecorder:
             self._stop_event.set()
             self._finish_current_segment()
             if self._record_thread is not None:
-                self._record_thread.join(timeout=35)
-                if self._record_thread.is_alive():
-                    _log("Waiting for the recording thread to finish finalizing")
-                    self._record_thread.join(timeout=10)
-
-            # The record thread has now queued the final partial file. Let the
-            # upload worker drain completed segments before automation exits.
-            self._upload_queue.put(None)
+                self._record_thread.join(timeout=SHUTDOWN_THREAD_JOIN_SEC)
+            # Do not drain the upload queue. Daemon upload thread may finish a
+            # short in-flight send, but it must not delay process exit.
+            try:
+                self._upload_queue.put_nowait(None)
+            except queue.Full:
+                pass
             if self._upload_thread is not None:
-                self._upload_thread.join(timeout=210)
-            _log("Stopped: no screen recording process remains")
+                self._upload_thread.join(timeout=SHUTDOWN_UPLOAD_JOIN_SEC)
+            _log("Stopped: automation may exit now (uploads no longer block shutdown)")
         finally:
             self.shutdown_marker.unlink(missing_ok=True)
 
