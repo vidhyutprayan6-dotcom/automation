@@ -30,6 +30,7 @@ from telegram.ext import (
 )
 
 from process_manager import ProcessManager
+from screen_recorder import get_recording_service
 
 # Shown in welcome so you can verify the Mac is running THIS file
 BOT_UI_VERSION = "v2026-08-15-proxy-reorder"
@@ -193,6 +194,7 @@ _notify_chat_ids: set[int] = set()
 _watch_task: asyncio.Task | None = None
 NOTIFY_CHATS_FILE = LOG_DIR / "notify_chats.txt"
 RESULTS_FILE = LOG_DIR / "last_run.json"
+recording_service = get_recording_service(PROJECT_DIR)
 
 
 def _load_notify_chats() -> None:
@@ -336,6 +338,9 @@ async def _watch_job_until_done(app: Application) -> None:
             code = manager.poll_exit_code()
             if manager.last_stop_was_user:
                 return
+            # Automation process is gone — end recording session (upload remainder)
+            # while the always-on recorder service itself keeps running.
+            await asyncio.to_thread(recording_service.end_session)
             results = _read_run_results()
             if results and results.get("outcome") == "completed":
                 text = _format_run_summary(results)
@@ -559,10 +564,18 @@ def _write_proxy_file(lines: list[str]) -> None:
 
 async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _remember_chat(update)
-    async with _process_lock:
-        ok, key = await asyncio.to_thread(manager.start)
     if not update.message:
         return
+    if manager.is_running():
+        await update.message.reply_text(
+            MESSAGES["already_running"], reply_markup=main_keyboard()
+        )
+        return
+    # Start recording for this run before launching automation so the full
+    # session is captured. If start fails, the session is closed again.
+    await asyncio.to_thread(recording_service.begin_session)
+    async with _process_lock:
+        ok, key = await asyncio.to_thread(manager.start)
     if ok:
         _start_job_watcher(context.application)
         await update.message.reply_text(MESSAGES["started"], reply_markup=main_keyboard())
@@ -571,11 +584,8 @@ async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             update,
             "запустил(а) автоматизацию. ▶️",
         )
-    elif key == "already_running":
-        await update.message.reply_text(
-            MESSAGES["already_running"], reply_markup=main_keyboard()
-        )
     else:
+        await asyncio.to_thread(recording_service.end_session)
         await update.message.reply_text(
             MESSAGES["start_failed"], reply_markup=main_keyboard()
         )
@@ -625,6 +635,9 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _watch_task = None
     async with _process_lock:
         ok, key = await asyncio.to_thread(manager.stop)
+    # Always end the recording session on /stop so the remainder is uploaded,
+    # while the always-on recorder service itself keeps running with the bot.
+    await asyncio.to_thread(recording_service.end_session)
     if update.message:
         if ok:
             await update.message.reply_text(MESSAGES["stopped"], reply_markup=main_keyboard())
@@ -894,6 +907,15 @@ async def _post_init(app: Application) -> None:
         BOT_UI_VERSION,
         Path(__file__).resolve(),
     )
+    # Always-on recorder: lives with the bot, idle until automation starts.
+    started = await asyncio.to_thread(recording_service.start_service)
+    logger.info("Recording service: %s", "on" if started else "off")
+
+
+async def _post_shutdown(app: Application) -> None:
+    """Stop the recorder service only when the Telegram bot itself stops."""
+    await asyncio.to_thread(recording_service.stop_service)
+    logger.info("Bot shutdown complete — recording service stopped")
 
 
 def main() -> None:
@@ -921,12 +943,14 @@ def main() -> None:
     print(f"[bot] UI {BOT_UI_VERSION}")
     print("[bot] Keyboard: /status /start /card /proxy /stop")
     print("[bot] /card and /proxy send stored COUNT as the first message")
+    print("[bot] Screen recorder service starts with this bot and stays up until the bot stops")
     print(f"[bot] File: {Path(__file__).resolve()}")
 
     app = (
         Application.builder()
         .token(token)
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
     app.add_handler(CommandHandler("start", cmd_start))
