@@ -24,7 +24,8 @@ AUTOMATION_LOG = LOG_DIR / "automation.log"
 PID_FILE = LOG_DIR / "automation.pid"
 
 GRACEFUL_TIMEOUT_SEC = 15.0
-RECORDING_UPLOAD_TIMEOUT_SEC = 12.0
+# Recorder stop only finalizes ffmpeg (~5s) then spawns a detached uploader.
+RECORDING_UPLOAD_TIMEOUT_SEC = 15.0
 RECORDING_SHUTDOWN_MARKER = LOG_DIR / "screen_recording_shutdown.active"
 BLACKBIRD_APP_PATH = Path("/Applications/BlackBird.app")
 BLACKBIRD_PROCESS_NAMES = ("BlackBird", "BlackBird Network")

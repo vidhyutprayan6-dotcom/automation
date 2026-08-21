@@ -12,7 +12,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 import requests
 from dotenv import load_dotenv
@@ -22,11 +22,10 @@ DEFAULT_SEGMENT_SECONDS = 30 * 60
 TESTING_SEGMENT_SECONDS = 60  # current testing phase: 1-minute segments
 TELEGRAM_MAX_BYTES = 49 * 1024 * 1024
 MIN_VALID_VIDEO_BYTES = 32 * 1024
-# Hard budget for stop(): kill capture and return so automation can exit.
-# Must stay under ~10s. Never wait for Telegram uploads on shutdown.
-SHUTDOWN_FFMPEG_WAIT_SEC = 2.0
-SHUTDOWN_THREAD_JOIN_SEC = 2.0
-SHUTDOWN_UPLOAD_JOIN_SEC = 1.0
+# Stop capture fast, then hand remaining files to a detached uploader so
+# automation can exit while the video is still delivered to Telegram.
+SHUTDOWN_FFMPEG_WAIT_SEC = 5.0
+SHUTDOWN_THREAD_JOIN_SEC = 3.0
 
 
 def _log(message: str) -> None:
@@ -48,7 +47,7 @@ def _segment_seconds() -> int:
 
 class ScreenRecorder:
     """
-    Record the whole main display in independent 30-minute MP4 segments.
+    Record the whole main display in independent segments.
 
     Recording and uploading run in background threads and never use pyautogui,
     Quartz, Accessibility, or the automation's mouse/keyboard thread.
@@ -59,6 +58,9 @@ class ScreenRecorder:
         self.output_dir = self.project_dir / "recordings"
         self.chat_file = self.project_dir / "logs" / "notify_chats.txt"
         self.ffmpeg_log = self.project_dir / "logs" / "screen_recording_ffmpeg.log"
+        self.upload_helper_log = (
+            self.project_dir / "logs" / "screen_recording_upload_helper.log"
+        )
         self.shutdown_marker = (
             self.project_dir / "logs" / "screen_recording_shutdown.active"
         )
@@ -69,6 +71,11 @@ class ScreenRecorder:
         self._upload_queue: queue.Queue[Optional[Path]] = queue.Queue()
         self._process_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
+        self._current_path: Optional[Path] = None
+        self._uploaded: Set[str] = set()
+        self._uploaded_lock = threading.Lock()
+        self._shutdown_mode = False
+        self._deferred: list[Path] = []
         self._record_thread: Optional[threading.Thread] = None
         self._upload_thread: Optional[threading.Thread] = None
         self._started = False
@@ -93,9 +100,8 @@ class ScreenRecorder:
         load_dotenv(self.project_dir / ".env")
         self.segment_seconds = _segment_seconds()
         self._started = True
-        # Daemon threads: while the run is active they still upload every
-        # segment, but they must never keep main.py alive after the workflow
-        # has already finished and asked to exit.
+        # Daemon mid-run workers must not keep main.py alive after stop().
+        # Final undelivered files are handed to a detached helper on shutdown.
         self._upload_thread = threading.Thread(
             target=self._upload_loop,
             name="screen-upload",
@@ -153,9 +159,7 @@ class ScreenRecorder:
         return self.output_dir / f"automation_screen_{stamp}.mp4"
 
     def _ffmpeg_command(self, path: Path) -> list[str]:
-        # 140 kbit/s gives a theoretical video payload of about 31.5 MB per
-        # 30 minutes, safely below Telegram Bot API's 50 MB upload ceiling.
-        # Shorter testing segments are proportionally smaller.
+        # 140 kbit/s ≈ 31.5 MB per 30 minutes, under Telegram's 50 MB limit.
         return [
             str(self.ffmpeg),
             "-hide_banner",
@@ -194,6 +198,22 @@ class ScreenRecorder:
             str(path),
         ]
 
+    def _mark_uploaded(self, path: Path) -> None:
+        with self._uploaded_lock:
+            self._uploaded.add(str(path.resolve()))
+
+    def _was_uploaded(self, path: Path) -> bool:
+        with self._uploaded_lock:
+            return str(path.resolve()) in self._uploaded
+
+    def _queue_if_valid(self, path: Path) -> bool:
+        if not path.is_file() or path.stat().st_size < MIN_VALID_VIDEO_BYTES:
+            return False
+        if self._was_uploaded(path):
+            return False
+        self._upload_queue.put(path)
+        return True
+
     def _record_loop(self) -> None:
         if not self.input_name:
             # Device enumeration runs only in this background thread so it
@@ -215,6 +235,7 @@ class ScreenRecorder:
                     )
                     with self._process_lock:
                         self._process = process
+                        self._current_path = path
                     process.wait()
             except Exception as exc:  # noqa: BLE001
                 _log(f"Could not start ffmpeg: {exc}")
@@ -224,18 +245,23 @@ class ScreenRecorder:
                 if self._process is process:
                     self._process = None
 
-            if path.is_file() and path.stat().st_size >= MIN_VALID_VIDEO_BYTES:
+            if self._queue_if_valid(path):
                 _log(
                     f"Segment complete: {path.name} "
                     f"({path.stat().st_size / 1024 / 1024:.1f} MB)"
                 )
-                self._upload_queue.put(path)
             else:
-                _log(
-                    "No valid recording was produced. Check macOS Screen "
-                    f"Recording permission. See {self.ffmpeg_log}"
-                )
-                path.unlink(missing_ok=True)
+                if path.is_file() and path.stat().st_size < MIN_VALID_VIDEO_BYTES:
+                    _log(
+                        "No valid recording was produced. Check macOS Screen "
+                        f"Recording permission. See {self.ffmpeg_log}"
+                    )
+                    path.unlink(missing_ok=True)
+                elif not path.is_file():
+                    _log(
+                        "No recording file was written. Check macOS Screen "
+                        f"Recording permission. See {self.ffmpeg_log}"
+                    )
 
             if process.returncode not in (0, 255, -signal.SIGTERM, -signal.SIGINT):
                 _log(f"ffmpeg exited with code {process.returncode}; recording stopped")
@@ -254,27 +280,34 @@ class ScreenRecorder:
             _log(f"Could not read Telegram chat list: {exc}")
         return sorted(result)
 
-    def _upload(self, path: Path) -> None:
+    def _upload(self, path: Path) -> bool:
+        if self._was_uploaded(path):
+            return True
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chats = self._chat_ids()
         if not token:
             _log(f"Upload skipped (TELEGRAM_BOT_TOKEN missing); retained {path}")
-            return
+            return False
         if not chats:
             _log(f"Upload skipped (no connected Telegram chats); retained {path}")
-            return
+            return False
+        if not path.is_file():
+            return False
         size = path.stat().st_size
+        if size < MIN_VALID_VIDEO_BYTES:
+            _log(f"Upload skipped: {path.name} is too small ({size} bytes)")
+            return False
         if size > TELEGRAM_MAX_BYTES:
             _log(
                 f"Upload skipped: {path.name} is {size / 1024 / 1024:.1f} MB, "
                 "over Telegram's 49 MB safety limit; file retained"
             )
-            return
+            return False
 
         caption = (
             "🎥 ЗАПИСЬ ЭКРАНА\n"
             f"Файл: {path.name}\n"
-            f"Период: до {self.segment_seconds} сек. работы автоматизации."
+            f"Размер: {size / 1024 / 1024:.1f} MB"
         )
         all_sent = True
         telegram_file_id: Optional[str] = None
@@ -313,10 +346,10 @@ class ScreenRecorder:
                     _log(f"Uploaded {path.name} to Telegram chat {chat_id}")
                     if telegram_file_id is None:
                         try:
-                            telegram_file_id = response.json()["result"]["video"]["file_id"]
+                            telegram_file_id = response.json()["result"]["video"][
+                                "file_id"
+                            ]
                         except (KeyError, TypeError, ValueError):
-                            # Delivery succeeded. If Telegram omits a reusable
-                            # ID, later chats simply receive a normal upload.
                             telegram_file_id = None
             except Exception as exc:  # noqa: BLE001
                 all_sent = False
@@ -325,8 +358,11 @@ class ScreenRecorder:
                     f"{type(exc).__name__}"
                 )
 
-        if not all_sent:
+        if all_sent:
+            self._mark_uploaded(path)
+        else:
             _log(f"At least one upload failed; local recording retained at {path}")
+        return all_sent
 
     def _upload_loop(self) -> None:
         while True:
@@ -334,6 +370,11 @@ class ScreenRecorder:
             try:
                 if path is None:
                     return
+                if self._shutdown_mode:
+                    # Leave undelivered files for the detached shutdown helper.
+                    if path.is_file():
+                        self._deferred.append(path)
+                    continue
                 if path.is_file():
                     self._upload(path)
             finally:
@@ -344,7 +385,7 @@ class ScreenRecorder:
             process = self._process
         if process is None or process.poll() is not None:
             return
-        _log("Automation ending: stopping ffmpeg immediately")
+        _log("Automation ending: finalizing current recording segment")
         try:
             if process.stdin is not None:
                 process.stdin.write(b"q\n")
@@ -357,6 +398,12 @@ class ScreenRecorder:
         except subprocess.TimeoutExpired:
             pass
         try:
+            process.send_signal(signal.SIGINT)
+            process.wait(timeout=2.0)
+            return
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
             process.kill()
             process.wait(timeout=1.0)
         except ProcessLookupError:
@@ -364,13 +411,76 @@ class ScreenRecorder:
         except subprocess.TimeoutExpired:
             _log("ffmpeg did not exit after kill request")
 
+    def _drain_pending_paths(self) -> list[Path]:
+        pending: list[Path] = []
+        seen: set[str] = set()
+
+        def add(path: Path) -> None:
+            key = str(path.resolve())
+            if key in seen or self._was_uploaded(path):
+                return
+            if path.is_file() and path.stat().st_size >= MIN_VALID_VIDEO_BYTES:
+                seen.add(key)
+                pending.append(path)
+
+        while True:
+            try:
+                item = self._upload_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                continue
+            add(item)
+
+        for item in list(self._deferred):
+            add(item)
+
+        with self._process_lock:
+            current = self._current_path
+        if current is not None:
+            add(current)
+        return pending
+
+    def _spawn_detached_uploader(self, paths: list[Path]) -> None:
+        if not paths:
+            _log("No pending recording files to upload on shutdown")
+            return
+        self.upload_helper_log.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--upload-only",
+            str(self.project_dir),
+            *[str(path) for path in paths],
+        ]
+        try:
+            with self.upload_helper_log.open("ab") as helper_log:
+                subprocess.Popen(
+                    cmd,
+                    cwd=str(self.project_dir),
+                    stdout=helper_log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                    env=os.environ.copy(),
+                )
+            names = ", ".join(path.name for path in paths)
+            _log(
+                f"Detached upload helper started for {len(paths)} file(s): {names}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"Could not start detached uploader: {exc}")
+            # Last-resort sync upload so the video is not silently lost.
+            for path in paths:
+                self._upload(path)
+
     def stop(self) -> None:
         """
-        Stop capture and return immediately so automation can exit.
+        Stop capture quickly, then deliver any unfinished recording.
 
-        Mid-run segment uploads are unaffected. On shutdown we only kill ffmpeg
-        and release the process — we never wait for Telegram uploads, because
-        that blocked exit for many minutes after every proxy was already done.
+        Automation exits after ffmpeg is stopped. Remaining videos are uploaded
+        by a detached helper process so Telegram still receives the recording
+        without blocking the CORRECT completion for many minutes.
         """
         with self._stop_lock:
             if self._stopped:
@@ -382,21 +492,52 @@ class ScreenRecorder:
         self.shutdown_marker.parent.mkdir(parents=True, exist_ok=True)
         self.shutdown_marker.touch()
         try:
+            # Block the mid-run uploader from consuming the final file so the
+            # detached helper can deliver it after automation exits.
+            self._shutdown_mode = True
             self._stop_event.set()
             self._finish_current_segment()
             if self._record_thread is not None:
                 self._record_thread.join(timeout=SHUTDOWN_THREAD_JOIN_SEC)
-            # Do not drain the upload queue. Daemon upload thread may finish a
-            # short in-flight send, but it must not delay process exit.
+
+            pending = self._drain_pending_paths()
             try:
                 self._upload_queue.put_nowait(None)
             except queue.Full:
                 pass
             if self._upload_thread is not None:
-                self._upload_thread.join(timeout=SHUTDOWN_UPLOAD_JOIN_SEC)
-            _log("Stopped: automation may exit now (uploads no longer block shutdown)")
+                self._upload_thread.join(timeout=1.0)
+
+            # Deferred files may have been captured while draining.
+            for item in list(self._deferred):
+                if item not in pending and not self._was_uploaded(item):
+                    if item.is_file() and item.stat().st_size >= MIN_VALID_VIDEO_BYTES:
+                        pending.append(item)
+
+            self._spawn_detached_uploader(pending)
+            _log(
+                "Stopped capture: automation can exit now; "
+                "pending video upload continues in the background"
+            )
         finally:
             self.shutdown_marker.unlink(missing_ok=True)
+
+
+def _upload_only_main(argv: list[str]) -> int:
+    """CLI entry used by the detached shutdown uploader."""
+    if len(argv) < 3:
+        _log("upload-only usage: --upload-only <project_dir> <file> [file...]")
+        return 2
+    project_dir = Path(argv[1]).resolve()
+    load_dotenv(project_dir / ".env")
+    recorder = ScreenRecorder(project_dir)
+    ok = True
+    for raw in argv[2:]:
+        path = Path(raw)
+        _log(f"Helper uploading: {path}")
+        if not recorder._upload(path):
+            ok = False
+    return 0 if ok else 1
 
 
 _SESSION: Optional[ScreenRecorder] = None
@@ -423,3 +564,9 @@ def start_screen_recording(project_dir: Path) -> ScreenRecorder:
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
     return session
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--upload-only":
+        raise SystemExit(_upload_only_main(sys.argv[2:]))
+    raise SystemExit("screen_recorder.py is imported by main.py; do not run directly")
