@@ -91,6 +91,8 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
     "legacy_centered": {
         "new_profile": (1455, 104),
         "new_proxy": (1409, 287),
+        # SOCKS5 = 3rd protocol chip (HTTP/HTTPS/SOCKS5/SSH); same offset as top_left
+        "socks5_button": (1539, 365),
         "proxy_input": (1274, 381),
         "create_profile": (1451, 738),
         "open_profile": (906, 201),
@@ -106,6 +108,8 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "new_profile": (1234, 70),
         # New Proxy = 3rd Connection segment (measured from Aug 10 screenshot)
         "new_proxy": (1192, 258),
+        # SOCKS5 = 3rd protocol chip; red-box center from client screenshot → 1920x1080
+        "socks5_button": (1322, 336),
         "proxy_input": (1020, 346),
         "create_profile": (1224, 703),
         "open_profile": (684, 173),   # proxy refresh icon
@@ -131,6 +135,8 @@ CONTINUE_WITHOUT_CANDIDATES: List[Tuple[str, Tuple[int, int]]] = [
 ACTIVE_LAYOUT = "top_left"
 LAYOUT_FORCE: Optional[str] = None  # set by --layout when not auto
 COORDS: Dict[str, Optional[Tuple[int, int]]] = dict(LAYOUTS[ACTIVE_LAYOUT])
+# http = original New Proxy → input; socks5 = New Proxy → SOCKS5 → input
+PROXY_TYPE = "http"
 
 # ---------------------------------------------------------------------------
 # STATE A — frozen known-good calibration (revert target on errors)
@@ -3051,6 +3057,18 @@ def click_new_proxy() -> bool:
     )
 
 
+def click_socks5_protocol() -> bool:
+    """
+    Protocol row → SOCKS5 (3rd of HTTP/HTTPS/SOCKS5/SSH) after New Proxy.
+    AX by label first; calibrated socks5_button fallback.
+    """
+    if click_ax_button(["SOCKS5", "Socks5", "socks5"], "SOCKS5"):
+        return True
+    return click_target(
+        "socks5_button", "SOCKS5 protocol button", activate_app=False
+    )
+
+
 def _close_one_proxy_browser_ax() -> str:
     """Try native Accessibility close actions on one proxy-browser window."""
     script = f"""
@@ -3386,7 +3404,8 @@ def return_to_blackbird_manager(reason: str = "") -> None:
 
 def create_profile_with_proxy(proxy: str) -> bool:
     """
-    New profile → 3s → New Proxy → 3s → type proxy (exact) → 3s → Create.
+    New profile → 3s → New Proxy → 3s → [SOCKS5 if proxy_type=socks5] →
+    type proxy (exact) → 3s → Create.
     Manager is unminimized so New profile is clickable; never left covering browsers after.
     """
     if not is_blackbird_running():
@@ -3419,6 +3438,12 @@ def create_profile_with_proxy(proxy: str) -> bool:
     if not retry_manager_click(click_new_proxy, "New Proxy"):
         return False
     wait_seconds(DELAY_STEP, "after New Proxy")
+
+    # Optional only for --proxy-type socks5. HTTP keeps original New Proxy → input.
+    if PROXY_TYPE == "socks5":
+        if not retry_manager_click(click_socks5_protocol, "SOCKS5"):
+            return False
+        wait_seconds(DELAY_STEP, "after SOCKS5")
 
     if not retry_manager_click(
         lambda: click_target("proxy_input", "Proxy input field", activate_app=False),
@@ -3628,6 +3653,12 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Process only the first N proxies (0 = all)",
     )
+    p.add_argument(
+        "--proxy-type",
+        choices=["http", "socks5"],
+        default="http",
+        help="After New Proxy: http=input field (default); socks5=click SOCKS5 then input",
+    )
     return p.parse_args()
 
 
@@ -3701,12 +3732,14 @@ def main() -> None:
     _startup_environment_report()
 
     args = parse_args()
-    global LAYOUT_FORCE
+    global LAYOUT_FORCE, PROXY_TYPE
     LAYOUT_FORCE = None if args.layout == "auto" else args.layout
+    PROXY_TYPE = args.proxy_type
 
     w, h = pyautogui.size()
     print(f"[INFO] Screen size: {w}x{h} (calibrated {BASE_SCREEN[0]}x{BASE_SCREEN[1]})")
     print(f"[INFO] Script dir: {SCRIPT_DIR}")
+    print(f"[INFO] Proxy type: {PROXY_TYPE}")
     print("[INFO] Loaded STATE A (known-good calibration)")
     restore_state_a("boot")
 

@@ -3,7 +3,9 @@
 Telegram remote controller for the existing BlackBird automation (main.py).
 
 First Telegram "Start" (/start)  → connect + show button menu only
-Keyboard /start                  → start automation
+Keyboard /start                  → choose /HTTP or /SOCKS5 (or /Cancel)
+ /HTTP                           → start (original New Proxy → input)
+ /SOCKS5                         → start (New Proxy → SOCKS5 → input)
 Keyboard /stop                   → stop automation
 Keyboard /status                 → running / stopped
 Keyboard /card                   → enter cards, then /save → card.txt
@@ -33,7 +35,7 @@ from process_manager import ProcessManager
 from screen_recorder import get_recording_service
 
 # Shown in welcome so you can verify the Mac is running THIS file
-BOT_UI_VERSION = "v2026-08-15-proxy-reorder"
+BOT_UI_VERSION = "v2026-08-25-proxy-type"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CARD_FILE = PROJECT_DIR / "card.txt"
@@ -56,6 +58,7 @@ load_dotenv(PROJECT_DIR / ".env")
 USER_CONNECTED_KEY = "bot_menu_shown"
 EDIT_MODE_KEY = "edit_mode"  # None | "card" | "proxy"
 EDIT_BUFFER_KEY = "edit_buffer"  # list[str]
+PROXY_CHOICE_KEY = "awaiting_proxy_type"  # True while /HTTP|/SOCKS5|/Cancel shown
 
 CARD_HEADER = (
     "# One card per line: number|MM|YY|CVC|Cardholder Name\n"
@@ -77,6 +80,17 @@ MESSAGES = {
         "• /stop — остановить автоматизацию + BlackBird\n"
         "• /card — заменить карты (показывает сохранённое количество)\n"
         "• /proxy — заменить прокси (показывает сохранённое количество)"
+    ),
+    "choose_proxy_type": (
+        "▶️ ВЫБОР ТИПА ПРОКСИ\n\n"
+        "Выберите режим перед запуском:\n"
+        "• /HTTP — обычный путь (New Proxy → поле ввода)\n"
+        "• /SOCKS5 — New Proxy → SOCKS5 → поле ввода\n"
+        "• /Cancel — вернуться в главное меню без запуска"
+    ),
+    "start_cancelled": (
+        "↩️ ОТМЕНА ЗАПУСКА: возврат в меню.\n"
+        "Автоматизация не запущена."
     ),
     "started": (
         "▶️ СТАРТ: задача СЕЙЧАС ВЫПОЛНЯЕТСЯ.\n"
@@ -398,6 +412,21 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+
+def proxy_type_keyboard() -> ReplyKeyboardMarkup:
+    """Shown after keyboard /start — choose HTTP, SOCKS5, or Cancel."""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("/HTTP"), KeyboardButton("/SOCKS5")],
+            [KeyboardButton("/Cancel")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Выберите /HTTP, /SOCKS5 или /Cancel",
+    )
+
+
 def save_keyboard() -> ReplyKeyboardMarkup:
     """Shown in /card or /proxy input mode: save or return to menu."""
     return ReplyKeyboardMarkup(
@@ -562,10 +591,15 @@ def _write_proxy_file(lines: list[str]) -> None:
     DATA_FILE.write_text(body, encoding="utf-8")
 
 
-async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _start_automation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    proxy_type: str = "http",
+) -> None:
     _remember_chat(update)
     if not update.message:
         return
+    context.user_data[PROXY_CHOICE_KEY] = False
     if manager.is_running():
         await update.message.reply_text(
             MESSAGES["already_running"], reply_markup=main_keyboard()
@@ -575,20 +609,25 @@ async def _start_automation(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # session is captured. If start fails, the session is closed again.
     await asyncio.to_thread(recording_service.begin_session)
     async with _process_lock:
-        ok, key = await asyncio.to_thread(manager.start)
+        ok, key = await asyncio.to_thread(manager.start, proxy_type)
     if ok:
         _start_job_watcher(context.application)
-        await update.message.reply_text(MESSAGES["started"], reply_markup=main_keyboard())
+        mode_label = "SOCKS5" if proxy_type == "socks5" else "HTTP"
+        await update.message.reply_text(
+            MESSAGES["started"] + f"\nРежим прокси: {mode_label}",
+            reply_markup=main_keyboard(),
+        )
         await _notify_other_users(
             context.application,
             update,
-            "запустил(а) автоматизацию. ▶️",
+            f"запустил(а) автоматизацию ({mode_label}). ▶️",
         )
     else:
         await asyncio.to_thread(recording_service.end_session)
         await update.message.reply_text(
             MESSAGES["start_failed"], reply_markup=main_keyboard()
         )
+
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -606,6 +645,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     menu_shown = context.user_data.get(USER_CONNECTED_KEY, False)
     if not menu_shown:
         context.user_data[USER_CONNECTED_KEY] = True
+        context.user_data[PROXY_CHOICE_KEY] = False
         logger.info(
             "/start (first connect) user_id=%s ui=%s — send 5-button keyboard",
             uid,
@@ -619,8 +659,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    logger.info("/start (keyboard — start automation) from user_id=%s", uid)
-    await _start_automation(update, context)
+    if manager.is_running():
+        context.user_data[PROXY_CHOICE_KEY] = False
+        if update.message:
+            await update.message.reply_text(
+                MESSAGES["already_running"], reply_markup=main_keyboard()
+            )
+        return
+
+    context.user_data[PROXY_CHOICE_KEY] = True
+    logger.info("/start (proxy-type choice) from user_id=%s", uid)
+    if update.message:
+        await update.message.reply_text(
+            MESSAGES["choose_proxy_type"],
+            reply_markup=proxy_type_keyboard(),
+        )
+
+
+async def cmd_http(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start automation with original HTTP path (New Proxy → input)."""
+    uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
+    if context.user_data.get(EDIT_MODE_KEY):
+        _clear_edit_state(context)
+    logger.info("/HTTP from user_id=%s", uid)
+    await _start_automation(update, context, proxy_type="http")
+
+
+async def cmd_socks5(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start automation with SOCKS5 click between New Proxy and input."""
+    uid = update.effective_user.id if update.effective_user else "?"
+    _remember_chat(update)
+    if context.user_data.get(EDIT_MODE_KEY):
+        _clear_edit_state(context)
+    logger.info("/SOCKS5 from user_id=%s", uid)
+    await _start_automation(update, context, proxy_type="socks5")
+
 
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -678,6 +752,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _remember_chat(update)
     logger.info("/menu from user_id=%s ui=%s", uid, BOT_UI_VERSION)
     context.user_data[USER_CONNECTED_KEY] = True
+    context.user_data[PROXY_CHOICE_KEY] = False
     _clear_edit_state(context)
     await show_main_menu(update, MESSAGES["welcome"])
     await _notify_other_users(
@@ -688,19 +763,39 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Leave /card or /proxy input without saving and restore the main menu."""
+    """
+    /Cancel or /cancel:
+      - During proxy-type choice after /start → back to main menu (no start)
+      - During /card or /proxy input → leave without saving
+    """
     uid = update.effective_user.id if update.effective_user else "?"
     _remember_chat(update)
+    awaiting_type = bool(context.user_data.get(PROXY_CHOICE_KEY))
     mode = context.user_data.get(EDIT_MODE_KEY)
-    logger.info("/cancel from user_id=%s mode=%s", uid, mode)
+    logger.info(
+        "/cancel from user_id=%s awaiting_proxy_type=%s mode=%s",
+        uid,
+        awaiting_type,
+        mode,
+    )
     context.user_data[USER_CONNECTED_KEY] = True
+    context.user_data[PROXY_CHOICE_KEY] = False
     _clear_edit_state(context)
+    if awaiting_type and not mode:
+        await show_main_menu(update, MESSAGES["start_cancelled"])
+        await _notify_other_users(
+            context.application,
+            update,
+            "отменил(а) выбор типа прокси. ↩️",
+        )
+        return
     await show_main_menu(update, MESSAGES["input_cancelled"])
     await _notify_other_users(
         context.application,
         update,
         f"отменил(а) режим ({mode or 'ввод'}) без сохранения. ↩️",
     )
+
 
 
 async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -893,6 +988,8 @@ async def _post_init(app: Application) -> None:
     await app.bot.set_my_commands(
         [
             BotCommand("start", "Подключиться / запустить автоматизацию"),
+            BotCommand("HTTP", "Запуск: обычный путь (New Proxy → ввод)"),
+            BotCommand("SOCKS5", "Запуск: New Proxy → SOCKS5 → ввод"),
             BotCommand("status", "Проверить статус выполнения"),
             BotCommand("stop", "Остановить автоматизацию + BlackBird"),
             BotCommand("card", "Заменить карты → /save"),
@@ -942,6 +1039,7 @@ def main() -> None:
     )
     print(f"[bot] UI {BOT_UI_VERSION}")
     print("[bot] Keyboard: /status /start /card /proxy /stop")
+    print("[bot] After /start: choose /HTTP, /SOCKS5, or /Cancel")
     print("[bot] /card and /proxy send stored COUNT as the first message")
     print("[bot] Screen recorder service starts with this bot and stays up until the bot stops")
     print(f"[bot] File: {Path(__file__).resolve()}")
@@ -954,6 +1052,8 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("HTTP", cmd_http))
+    app.add_handler(CommandHandler("SOCKS5", cmd_socks5))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("menu", cmd_menu))

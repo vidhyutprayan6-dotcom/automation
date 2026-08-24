@@ -320,7 +320,7 @@ class ProcessManager:
         self._clear_pid_file()
         return False
 
-    def start(self) -> Tuple[bool, str]:
+    def start(self, proxy_type: str = "http") -> Tuple[bool, str]:
         if self.is_running():
             return False, "already_running"
 
@@ -338,10 +338,15 @@ class ProcessManager:
                 logger.error("Missing required file: %s", name)
                 return False, "start_failed"
 
+        mode = (proxy_type or "http").strip().lower()
+        if mode not in ("http", "socks5"):
+            logger.error("Invalid proxy_type %r — expected http or socks5", proxy_type)
+            return False, "start_failed"
+
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_fp = open(AUTOMATION_LOG, "a", encoding="utf-8")  # noqa: SIM115
 
-        cmd = [str(python_exe), str(MAIN_SCRIPT)]
+        cmd = [str(python_exe), str(MAIN_SCRIPT), "--proxy-type", mode]
         logger.info("Starting automation: %s (cwd=%s)", cmd, self.project_dir)
 
         try:
