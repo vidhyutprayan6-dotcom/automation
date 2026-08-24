@@ -91,8 +91,8 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
     "legacy_centered": {
         "new_profile": (1455, 104),
         "new_proxy": (1409, 287),
-        # SOCKS5 = 3rd protocol chip (HTTP/HTTPS/SOCKS5/SSH); same offset as top_left
-        "socks5_button": (1539, 365),
+        # SOCKS5 = between new_proxy and proxy_input (same relative ratios as top_left)
+        "socks5_button": (1359, 335),
         "proxy_input": (1274, 381),
         "create_profile": (1451, 738),
         "open_profile": (906, 201),
@@ -108,8 +108,11 @@ LAYOUTS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "new_profile": (1234, 70),
         # New Proxy = 3rd Connection segment (measured from Aug 10 screenshot)
         "new_proxy": (1192, 258),
-        # SOCKS5 = 3rd protocol chip; red-box center from client screenshot → 1920x1080
-        "socks5_button": (1322, 336),
+        # SOCKS5 = 3rd protocol chip, between working New Proxy and proxy input.
+        # Derived from red-box ratios on client screenshot mapped onto the
+        # known-good new_proxy (1192,258) and proxy_input (1020,346) anchors:
+        #   t_x≈0.369, t_y≈0.510 along New Proxy → input.
+        "socks5_button": (1129, 303),
         "proxy_input": (1020, 346),
         "create_profile": (1224, 703),
         "open_profile": (684, 173),   # proxy refresh icon
@@ -3060,13 +3063,13 @@ def click_new_proxy() -> bool:
 def click_socks5_protocol() -> bool:
     """
     Protocol row → SOCKS5 (3rd of HTTP/HTTPS/SOCKS5/SSH) after New Proxy.
-    AX by label first; calibrated socks5_button fallback.
+
+    Coordinate click is primary: AX often matches a non-toggling SOCKS5 text
+    node and returns success without selecting the protocol chip.
     """
-    if click_ax_button(["SOCKS5", "Socks5", "socks5"], "SOCKS5"):
+    if click_target("socks5_button", "SOCKS5 protocol button", activate_app=False):
         return True
-    return click_target(
-        "socks5_button", "SOCKS5 protocol button", activate_app=False
-    )
+    return click_ax_button(["SOCKS5", "Socks5", "socks5"], "SOCKS5")
 
 
 def _close_one_proxy_browser_ax() -> str:
