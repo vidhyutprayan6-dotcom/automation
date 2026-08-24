@@ -985,20 +985,26 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _post_init(app: Application) -> None:
     """Register slash commands so they also appear in Telegram's command menu."""
-    await app.bot.set_my_commands(
-        [
-            BotCommand("start", "Подключиться / запустить автоматизацию"),
-            BotCommand("HTTP", "Запуск: обычный путь (New Proxy → ввод)"),
-            BotCommand("SOCKS5", "Запуск: New Proxy → SOCKS5 → ввод"),
-            BotCommand("status", "Проверить статус выполнения"),
-            BotCommand("stop", "Остановить автоматизацию + BlackBird"),
-            BotCommand("card", "Заменить карты → /save"),
-            BotCommand("proxy", "Заменить прокси → /save"),
-            BotCommand("save", "Сохранить вставленные данные карт/прокси"),
-            BotCommand("cancel", "Выйти из ввода карт/прокси без сохранения"),
-            BotCommand("menu", "Обновить меню из 5 кнопок"),
-        ]
-    )
+    # Telegram Bot API requires command names to be lowercase only
+    # (a-z, 0-9, _). Keyboard labels may still show /HTTP and /SOCKS5.
+    try:
+        await app.bot.set_my_commands(
+            [
+                BotCommand("start", "Подключиться / выбрать HTTP или SOCKS5"),
+                BotCommand("http", "Запуск: обычный путь (New Proxy -> ввод)"),
+                BotCommand("socks5", "Запуск: New Proxy -> SOCKS5 -> ввод"),
+                BotCommand("status", "Проверить статус выполнения"),
+                BotCommand("stop", "Остановить автоматизацию + BlackBird"),
+                BotCommand("card", "Заменить карты -> /save"),
+                BotCommand("proxy", "Заменить прокси -> /save"),
+                BotCommand("save", "Сохранить вставленные данные карт/прокси"),
+                BotCommand("cancel", "Отмена выбора / ввода карт/прокси"),
+                BotCommand("menu", "Обновить меню из 5 кнопок"),
+            ]
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Never block bot startup on command-menu registration.
+        logger.warning("set_my_commands failed (bot will still run): %s", exc)
     logger.info(
         "Bot ready ui=%s file=%s buttons=/status /start /card /proxy /stop",
         BOT_UI_VERSION,
@@ -1052,8 +1058,10 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("HTTP", cmd_http))
-    app.add_handler(CommandHandler("SOCKS5", cmd_socks5))
+    # Command names are matched case-insensitively; register lowercase so
+    # /HTTP, /http, /SOCKS5, /socks5 all work with the reply keyboard.
+    app.add_handler(CommandHandler("http", cmd_http))
+    app.add_handler(CommandHandler("socks5", cmd_socks5))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("menu", cmd_menu))
